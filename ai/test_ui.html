@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Gateway — Live Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0b1220;
+      color: #e6e9ef;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+      gap: 20px;
+    }
+
+    h1 { font-size: 18px; font-weight: 700; letter-spacing: 0.3px; }
+
+    .subtitle {
+      font-size: 12px;
+      opacity: 0.5;
+      margin-top: 2px;
+    }
+
+    /* Config bar */
+    .config {
+      width: 100%;
+      max-width: 760px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .config input {
+      flex: 1;
+      min-width: 140px;
+      height: 36px;
+      padding: 0 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      color: #e6e9ef;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .config input::placeholder { color: rgba(230,233,239,0.4); }
+
+    /* Mode pills */
+    .modes {
+      width: 100%;
+      max-width: 760px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .mode-pill {
+      height: 32px;
+      padding: 0 14px;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.06);
+      color: #e6e9ef;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      display: inline-flex;
+      align-items: center;
+      user-select: none;
+    }
+
+    .mode-pill:hover:not(.active) {
+      background: rgba(255,255,255,0.10);
+    }
+
+    .mode-pill.active {
+      background: rgba(89,140,255,0.25);
+      border-color: rgba(89,140,255,0.5);
+      color: #c8d9ff;
+      font-weight: 600;
+    }
+
+    /* Chat area */
+    .chat {
+      width: 100%;
+      max-width: 760px;
+      flex: 1;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+      overflow-y: auto;
+      max-height: 480px;
+      min-height: 200px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .msg {
+      padding: 10px 12px;
+      border-radius: 12px;
+      font-size: 13.5px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-width: 90%;
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: rgba(89,140,255,0.18);
+      border: 1px solid rgba(89,140,255,0.22);
+    }
+
+    .msg.ai {
+      align-self: flex-start;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+
+    .msg.error {
+      align-self: flex-start;
+      background: rgba(255,80,80,0.12);
+      border: 1px solid rgba(255,80,80,0.30);
+      color: #ff9898;
+    }
+
+    .msg.system {
+      align-self: center;
+      background: transparent;
+      border: none;
+      font-size: 11px;
+      opacity: 0.45;
+      text-align: center;
+    }
+
+    .msg .meta {
+      font-size: 10px;
+      opacity: 0.45;
+      margin-top: 4px;
+    }
+
+    /* Input row */
+    .input-row {
+      width: 100%;
+      max-width: 760px;
+      display: flex;
+      gap: 10px;
+    }
+
+    .input-row input {
+      flex: 1;
+      height: 44px;
+      padding: 0 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.06);
+      color: #e6e9ef;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .input-row input::placeholder { color: rgba(230,233,239,0.4); }
+
+    .input-row input:disabled { opacity: 0.5; }
+
+    .send-btn {
+      height: 44px;
+      padding: 0 18px;
+      border-radius: 14px;
+      border: 1px solid rgba(89,140,255,0.35);
+      background: rgba(89,140,255,0.18);
+      color: #c8d9ff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .send-btn:hover:not(:disabled) { background: rgba(89,140,255,0.28); }
+    .send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Debug panel */
+    .debug-toggle {
+      font-size: 12px;
+      opacity: 0.45;
+      cursor: pointer;
+      text-decoration: underline;
+      align-self: flex-start;
+      width: 100%;
+      max-width: 760px;
+    }
+
+    .debug {
+      width: 100%;
+      max-width: 760px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 11px;
+      font-family: monospace;
+      color: #a0c8ff;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 280px;
+      overflow-y: auto;
+      display: none;
+    }
+
+    .debug.visible { display: block; }
+
+    .badge {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 8px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    .badge.cached { background: rgba(80,200,80,0.15); color: #80d080; border: 1px solid rgba(80,200,80,0.25); }
+    .badge.fresh   { background: rgba(89,140,255,0.15); color: #98b8ff; border: 1px solid rgba(89,140,255,0.25); }
+  </style>
+</head>
+<body>
+
+  <div>
+    <h1>🤖 AI Gateway — Live Test</h1>
+    <p class="subtitle">Direkt <code>localhost:8003/b2b/ask_intelligent</code> bağlantısı • Spring Boot bypass</p>
+  </div>
+
+  <!-- Config -->
+  <div class="config">
+    <input id="gatewayUrl" value="http://localhost:8003" placeholder="Gateway URL (http://localhost:8003)" />
+    <input id="apiKey" value="test_key" placeholder="X-School-Key (test_key)" />
+    <input id="sessionId" value="test-session-001" placeholder="Session ID" />
+  </div>
+
+  <!-- Mode pills -->
+  <div class="modes" id="modeGroup" role="group" aria-label="Mod seçimi">
+    <button class="mode-pill active" data-mode="wizard"   onclick="selectMode(this)">🎯 Tercih Sihirbazı</button>
+    <button class="mode-pill"        data-mode="research" onclick="selectMode(this)">🔍 Araştırma Asistanı</button>
+    <button class="mode-pill"        data-mode="career"   onclick="selectMode(this)">🧭 Kariyer Pusulası</button>
+    <button class="mode-pill"        data-mode="guidance" onclick="selectMode(this)">💬 Rehberlik</button>
+    <button class="mode-pill"        data-mode=""         onclick="selectMode(this)">⚙️ Auto (mode=null)</button>
+  </div>
+
+  <!-- Chat log -->
+  <div class="chat" id="chat">
+    <div class="msg system">Hazır. Mod seç, soru yaz, gönder.</div>
+  </div>
+
+  <!-- Input -->
+  <div class="input-row">
+    <input id="queryInput" placeholder="Soru yaz..." onkeydown="if(event.key==='Enter') sendMessage()" />
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()">Gönder</button>
+  </div>
+
+  <!-- Debug -->
+  <span class="debug-toggle" onclick="toggleDebug()">▶ Son request/response detayı</span>
+  <pre class="debug" id="debugPanel"></pre>
+
+  <script>
+    let currentMode = "wizard";
+    let waiting = false;
+
+    function selectMode(btn) {
+      document.querySelectorAll(".mode-pill").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentMode = btn.dataset.mode;  // "" = null (auto)
+      addSystemMsg(`Mod değişti → ${btn.textContent.trim()}`);
+    }
+
+    function toggleDebug() {
+      const panel = document.getElementById("debugPanel");
+      panel.classList.toggle("visible");
+      document.querySelector(".debug-toggle").textContent =
+        panel.classList.contains("visible")
+          ? "▼ Son request/response detayı"
+          : "▶ Son request/response detayı";
+    }
+
+    function addMsg(text, cls, meta = "") {
+      const chat = document.getElementById("chat");
+      const div = document.createElement("div");
+      div.className = `msg ${cls}`;
+      div.textContent = text;
+      if (meta) {
+        const m = document.createElement("div");
+        m.className = "meta";
+        m.innerHTML = meta;
+        div.appendChild(m);
+      }
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function addSystemMsg(text) {
+      addMsg(text, "system");
+    }
+
+    function setWaiting(val) {
+      waiting = val;
+      document.getElementById("sendBtn").disabled = val;
+      document.getElementById("queryInput").disabled = val;
+      document.getElementById("sendBtn").textContent = val ? "⏳ Bekle..." : "Gönder";
+    }
+
+    async function sendMessage() {
+      if (waiting) return;
+      const input = document.getElementById("queryInput");
+      const query = input.value.trim();
+      if (!query) return;
+
+      const gatewayUrl = document.getElementById("gatewayUrl").value.trim().replace(/\/$/, "");
+      const apiKey     = document.getElementById("apiKey").value.trim();
+      const sessionId  = document.getElementById("sessionId").value.trim();
+
+      input.value = "";
+      addMsg(query, "user");
+      setWaiting(true);
+
+      const loadingDiv = addMsg("⏳ Yanıt bekleniyor…", "ai");
+      const startTime = Date.now();
+
+      // Build request body
+      const body = { query, session_id: sessionId };
+      if (currentMode) body.mode = currentMode;  // "" → omit (auto routing)
+
+      const requestInfo = {
+        url: `${gatewayUrl}/b2b/ask_intelligent`,
+        headers: { "Content-Type": "application/json", "X-School-Key": apiKey },
+        body,
+      };
+
+      try {
+        const resp = await fetch(`${gatewayUrl}/b2b/ask_intelligent`, {
+          method: "POST",
+          headers: requestInfo.headers,
+          body: JSON.stringify(body),
+        });
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const respText = await resp.text();
+
+        let data;
+        try { data = JSON.parse(respText); } catch { data = { answer: respText }; }
+
+        // Update debug panel
+        document.getElementById("debugPanel").textContent =
+          "REQUEST:\n" + JSON.stringify(requestInfo, null, 2) +
+          "\n\nRESPONSE (" + resp.status + "):\n" + JSON.stringify(data, null, 2);
+
+        if (!resp.ok) {
+          loadingDiv.className = "msg error";
+          loadingDiv.textContent = `❌ HTTP ${resp.status} — ${data?.detail ?? respText}`;
+          return;
+        }
+
+        const answer  = data?.answer  ?? data?.message ?? JSON.stringify(data);
+        const cached  = data?.cached  ?? false;
+        const tokens  = data?.usage?.total_tokens ?? "?";
+
+        const badgeCls  = cached ? "cached" : "fresh";
+        const badgeText = cached ? "cache HIT" : "fresh";
+        const meta = `${elapsed}s • ${tokens} token <span class="badge ${badgeCls}">${badgeText}</span>`;
+
+        loadingDiv.textContent = answer;
+        loadingDiv.insertAdjacentHTML("beforeend", `<div class="meta">${meta}</div>`);
+
+      } catch (err) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        loadingDiv.className = "msg error";
+        loadingDiv.textContent = `❌ Bağlantı hatası (${elapsed}s): ${err.message}`;
+
+        document.getElementById("debugPanel").textContent =
+          "REQUEST:\n" + JSON.stringify(requestInfo, null, 2) +
+          "\n\nERROR: " + err.toString();
+      } finally {
+        setWaiting(false);
+      }
+    }
+  </script>
+
+</body>
+</html>

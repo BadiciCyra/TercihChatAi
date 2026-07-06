@@ -1,0 +1,33 @@
+# requirements.prod.txt — Northflank / Production
+# Playwright ve hypothesis kaldırıldı.
+# Versiyonlar mevcut çalışan container'dan alındı (pip freeze).
+
+fastapi==0.139.0
+uvicorn==0.50.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-dotenv
+langchain==1.3.11
+langchain-google-genai==4.2.6
+langchain-core==1.4.8
+langgraph==1.2.7
+langgraph-checkpoint==4.1.1
+langgraph-prebuilt==1.1.0
+langgraph-sdk==0.4.2
+psycopg2-binary
+google-generativeai==0.8.6
+redis==8.0.1
+aiohttp==3.14.1
+requests
+trafilatura==2.1.0
+beautifulsoup4==4.15.0
+html2text==2025.4.15
+readability-lxml==0.8.4.1
+pymupdf==1.28.0
+youtube-transcript-api==1.2.4
+lxml_html_clean==0.4.5
+lxml==6.1.1
+ddgs==9.14.4
+sentence-transformers==5.6.0
+rich==15.0.0
+httpx==0.28.1

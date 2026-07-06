@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Ortam dosyaları — ASLA commit etme
+.env
+.env.local
+.env.production
+*.env
+
+# Hipotez ve test çıktıları
+.hypothesis/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Model cache — büyük dosyalar, repo'ya girmesin
+hf_cache/
+hf_home/
+*.bin
+*.pt
+*.safetensors
+model_cache/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Log
+*.log
+logs/
+
+# Geçici dosyalar
+*.tmp
+*.bak

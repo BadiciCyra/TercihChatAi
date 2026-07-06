@@ -1,0 +1,37 @@
+# Dockerfile.prod — Northflank / Production için optimize edilmiş image
+# ─────────────────────────────────────────────────────────────────────────────
+# Farklılıklar (Dockerfile'a göre):
+#   - Playwright KALDIRILDI (Northflank'te Chromium kurulumu desteklenmiyor,
+#     ayrıca production'da zaten httpx/aiohttp ile scraping yapılıyor)
+#   - PyTorch CPU-only kurulumu korundu (re-ranker için gerekli)
+#   - Layer caching optimize edildi (requirements değişmeden image rebuild'i hızlı)
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Sistem bağımlılıkları — sadece gerekli olanlar
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pip güncelle
+RUN pip install --upgrade pip
+
+# PyTorch CPU (re-ranker için — diğer servisler import etse de sorun yok)
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+
+# Requirements — ayrı layer'da (requirements.txt değişmeden cache kullanılır)
+COPY requirements.prod.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Uygulama kodu
+COPY . .
+
+# Varsayılan başlatma (override edilecek)
+CMD ["uvicorn", "gate:app", "--host", "0.0.0.0", "--port", "8003"]
