@@ -107,8 +107,7 @@
       padding: 10px 12px;
       border-radius: 12px;
       font-size: 13.5px;
-      line-height: 1.5;
-      white-space: pre-wrap;
+      line-height: 1.6;
       word-break: break-word;
       max-width: 90%;
     }
@@ -117,6 +116,7 @@
       align-self: flex-end;
       background: rgba(89,140,255,0.18);
       border: 1px solid rgba(89,140,255,0.22);
+      white-space: pre-wrap;
     }
 
     .msg.ai {
@@ -130,6 +130,7 @@
       background: rgba(255,80,80,0.12);
       border: 1px solid rgba(255,80,80,0.30);
       color: #ff9898;
+      white-space: pre-wrap;
     }
 
     .msg.system {
@@ -144,7 +145,92 @@
     .msg .meta {
       font-size: 10px;
       opacity: 0.45;
-      margin-top: 4px;
+      margin-top: 6px;
+    }
+
+    /* ── Markdown render stilleri ── */
+    .msg.ai h1, .msg.ai h2, .msg.ai h3 {
+      color: #c8d9ff;
+      font-weight: 700;
+      margin: 10px 0 4px;
+      line-height: 1.3;
+    }
+    .msg.ai h1 { font-size: 16px; }
+    .msg.ai h2 { font-size: 15px; }
+    .msg.ai h3 { font-size: 14px; }
+
+    .msg.ai p { margin: 4px 0; }
+
+    .msg.ai strong { color: #e0eaff; font-weight: 700; }
+    .msg.ai em { color: #b8d0ff; font-style: italic; }
+
+    /* Tablo — yatay scroll ile tam görünüm */
+    .msg.ai .table-wrap {
+      overflow-x: auto;
+      margin: 8px 0;
+      border-radius: 8px;
+    }
+
+    .msg.ai table {
+      border-collapse: collapse;
+      min-width: 100%;
+      font-size: 12.5px;
+    }
+
+    .msg.ai th {
+      background: rgba(89,140,255,0.20);
+      color: #c8d9ff;
+      font-weight: 700;
+      padding: 7px 10px;
+      text-align: left;
+      border: 1px solid rgba(89,140,255,0.20);
+      white-space: nowrap;
+    }
+
+    .msg.ai td {
+      padding: 6px 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      color: #e0e6f0;
+      white-space: nowrap;
+    }
+
+    .msg.ai tr:nth-child(even) td {
+      background: rgba(255,255,255,0.04);
+    }
+
+    .msg.ai tr:hover td {
+      background: rgba(89,140,255,0.08);
+    }
+
+    /* Linkler */
+    .msg.ai a {
+      color: #7eb3ff;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .msg.ai a:hover { color: #aaccff; }
+
+    /* Liste */
+    .msg.ai ul, .msg.ai ol {
+      padding-left: 20px;
+      margin: 4px 0;
+    }
+    .msg.ai li { margin: 2px 0; }
+
+    /* Kod */
+    .msg.ai code {
+      background: rgba(255,255,255,0.08);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+
+    /* Ayraç */
+    .msg.ai hr {
+      border: none;
+      border-top: 1px solid rgba(255,255,255,0.10);
+      margin: 8px 0;
     }
 
     /* Input row */
@@ -168,7 +254,6 @@
     }
 
     .input-row input::placeholder { color: rgba(230,233,239,0.4); }
-
     .input-row input:disabled { opacity: 0.5; }
 
     .send-btn {
@@ -229,6 +314,8 @@
     .badge.cached { background: rgba(80,200,80,0.15); color: #80d080; border: 1px solid rgba(80,200,80,0.25); }
     .badge.fresh   { background: rgba(89,140,255,0.15); color: #98b8ff; border: 1px solid rgba(89,140,255,0.25); }
   </style>
+  <!-- Marked.js: markdown → HTML dönüşümü -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 </head>
 <body>
 
@@ -272,10 +359,34 @@
     let currentMode = "wizard";
     let waiting = false;
 
+    // marked.js ayarları — güvenli render, linkler yeni sekmede açılsın
+    marked.setOptions({ breaks: true, gfm: true });
+
+    // Tablo elementlerini .table-wrap div'i içine al (yatay scroll için)
+    function wrapTables(container) {
+      container.querySelectorAll("table").forEach(table => {
+        if (!table.parentElement.classList.contains("table-wrap")) {
+          const wrap = document.createElement("div");
+          wrap.className = "table-wrap";
+          table.parentNode.insertBefore(wrap, table);
+          wrap.appendChild(table);
+        }
+      });
+      // Linkleri yeni sekmede aç
+      container.querySelectorAll("a").forEach(a => {
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+      });
+    }
+
+    function renderMarkdown(text) {
+      return marked.parse(text);
+    }
+
     function selectMode(btn) {
       document.querySelectorAll(".mode-pill").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      currentMode = btn.dataset.mode;  // "" = null (auto)
+      currentMode = btn.dataset.mode;
       addSystemMsg(`Mod değişti → ${btn.textContent.trim()}`);
     }
 
@@ -288,11 +399,16 @@
           : "▶ Son request/response detayı";
     }
 
-    function addMsg(text, cls, meta = "") {
+    function addMsg(text, cls, meta = "", isMarkdown = false) {
       const chat = document.getElementById("chat");
       const div = document.createElement("div");
       div.className = `msg ${cls}`;
-      div.textContent = text;
+      if (isMarkdown) {
+        div.innerHTML = renderMarkdown(text);
+        wrapTables(div);
+      } else {
+        div.textContent = text;
+      }
       if (meta) {
         const m = document.createElement("div");
         m.className = "meta";
@@ -332,9 +448,8 @@
       const loadingDiv = addMsg("⏳ Yanıt bekleniyor…", "ai");
       const startTime = Date.now();
 
-      // Build request body
       const body = { query, session_id: sessionId };
-      if (currentMode) body.mode = currentMode;  // "" → omit (auto routing)
+      if (currentMode) body.mode = currentMode;
 
       const requestInfo = {
         url: `${gatewayUrl}/b2b/ask_intelligent`,
@@ -355,7 +470,6 @@
         let data;
         try { data = JSON.parse(respText); } catch { data = { answer: respText }; }
 
-        // Update debug panel
         document.getElementById("debugPanel").textContent =
           "REQUEST:\n" + JSON.stringify(requestInfo, null, 2) +
           "\n\nRESPONSE (" + resp.status + "):\n" + JSON.stringify(data, null, 2);
@@ -374,8 +488,16 @@
         const badgeText = cached ? "cache HIT" : "fresh";
         const meta = `${elapsed}s • ${tokens} token <span class="badge ${badgeCls}">${badgeText}</span>`;
 
-        loadingDiv.textContent = answer;
-        loadingDiv.insertAdjacentHTML("beforeend", `<div class="meta">${meta}</div>`);
+        // Markdown render
+        loadingDiv.innerHTML = renderMarkdown(answer);
+        wrapTables(loadingDiv);
+
+        const metaEl = document.createElement("div");
+        metaEl.className = "meta";
+        metaEl.innerHTML = meta;
+        loadingDiv.appendChild(metaEl);
+
+        document.getElementById("chat").scrollTop = document.getElementById("chat").scrollHeight;
 
       } catch (err) {
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

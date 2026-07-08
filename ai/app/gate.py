@@ -434,6 +434,22 @@ async def list_api_keys(
 # --- 4. İSTEK MODELİ ---
 ChatMode = Literal["wizard", "research", "career", "guidance"]
 
+# Test UI endpoint'i — tarayıcıdan direkt erişim için
+@app.get("/test_ui.html", include_in_schema=False)
+async def serve_test_ui():
+    import os as _os
+    from fastapi.responses import HTMLResponse
+    html_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "test_ui.html")
+    if not _os.path.exists(html_path):
+        # Fallback: /app/test_ui.html
+        html_path = "/app/test_ui.html"
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "test_ui.html not found"}, status_code=404)
+
 class AskRequest(BaseModel):
     query: str
     session_id: str = "default_session"
