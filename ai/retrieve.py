@@ -23,7 +23,13 @@ import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 from fastapi import FastAPI
-from playwright.async_api import async_playwright
+try:
+    from playwright.async_api import async_playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    async_playwright = None
+    HAS_PLAYWRIGHT = False
+    print("[SERVER] ⚠️ Playwright yüklü değil, JS scraping devre dışı")
 from pydantic import BaseModel
 from readability import Document
 
@@ -770,9 +776,13 @@ async def lifespan(app: FastAPI):
         print(f"[SERVER] ⚠️ Redis başlatılamadı: {e}")
 
     try:
-        pw_playwright = await async_playwright().start()
-        pw_browser = await pw_playwright.chromium.launch(headless=True)
-        print("[SERVER] 🌐 Playwright Chromium başlatıldı (global browser).")
+        if HAS_PLAYWRIGHT and async_playwright is not None:
+            pw_playwright = await async_playwright().start()
+            pw_browser = await pw_playwright.chromium.launch(headless=True)
+            print("[SERVER] 🌐 Playwright Chromium başlatıldı (global browser).")
+        else:
+            print("[SERVER] ⚠️ Playwright yok, JS scraping atlanıyor.")
+            pw_browser = None
     except Exception as e:
         print(f"[SERVER] ⚠️ Playwright başlatılamadı: {e}")
         pw_browser = None
