@@ -1,0 +1,14 @@
+# Ortam değişkenleri — SIR içerir, asla commit'lenmemeli
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+
+# Node / Next
+node_modules/
+.next/

@@ -8,6 +8,7 @@ from prompts.uni_info import _UNI_INFO_SYSTEM_PROMPT
 from utils.validators import get_msg_content, strip_react_thoughts
 from utils.decorators import validate_node_input, validate_node_output, with_error_recovery
 from utils.extractors import _extract_uni_from_text, _extract_uni_llm_fallback
+from utils.query_planner import query_planner
 from utils.context_assembly import build_grouped_context
 from utils.link_fetcher import fetch_url_content
 from nodes.fast_lookup import _ddg_multi_query
@@ -25,6 +26,7 @@ _PRIORITY_FETCH_DOMAINS = [
     "yok.gov.tr", "kariyer.net", "burs.com.tr", "bursbul.com",
     "ogrenci.net", "kampüs.com", "kampus.com",
 ]
+
 
 def _pick_urls_to_fetch(buckets: list[list], max_urls: int = 2) -> list[str]:
     """DDG sonuçlarından fetch edilecek URL'leri seç.
@@ -93,9 +95,10 @@ def _save_uni_info_cache(key: str, content: str, ttl_seconds: int = 43200) -> No
 async def uni_info_node(state: AgentState) -> dict:
     """
     Üniversite bilgi & yorum node'u.
-    1. 4 paralel web araması yapar (genel, ücret, yorum, forum)
-    2. Toplanan snippet'leri LLM'e verir
-    3. LLM gerçek bir analiz/yorum üretir — sadece link listesi değil
+    1. QueryPlanner ile sınıflandırma + dinamik sorgu üretimi (LLM, fallback'li)
+    2. Sorguları paralel web aramasında kullanır
+    3. Toplanan snippet'leri LLM'e verir
+    4. LLM gerçek bir analiz/yorum üretir — sadece link listesi değil
     """
     messages = state.get("messages", [])
     user_text = get_msg_content(messages[-1]) if messages else ""
@@ -111,13 +114,25 @@ async def uni_info_node(state: AgentState) -> dict:
 
     print(f"[UNI_INFO] 🏫 Üniversite araştırılıyor: {uni}")
 
-    # Genel soru ise cache kontrolü yap (spesifik sorular cache'lenmez — kullanıcıya özel)
-    ner_web_query = ner_ctx.get("web_query", "")
-    is_specific = ner_web_query and any(
-        kw in user_text.lower()
-        for kw in ['kulüp', 'yurt', 'staj', 'burs', 'ücret', 'kampüs', 'yemek', 'ulaşım', 'spor', 'müfredat', 'hoca']
-    )
+    # Sınıflandırma + sorgu üretimi — QueryPlanner (LLM tabanlı, Redis cache'li)
+    try:
+        plan = await query_planner.classify_and_generate_queries(
+            user_text=user_text,
+            entity_name=uni,
+            mode="uni",
+        )
+    except Exception as e:
+        print(f"[UNI_INFO] 💥 QueryPlanner hatası: {e}")
+        plan = None
 
+    if plan is None or not plan.queries:
+        return {"messages": [AIMessage(content="Bu üniversite için şu an arama yapamıyorum, lütfen tekrar dene.")]}
+
+    is_specific = plan.is_specific
+    queries = plan.queries
+    print(f"[UNI_INFO] 🧠 QueryPlan: source={plan.source}, is_specific={is_specific}, {len(queries)} sorgu")
+
+    # Genel soru ise cache kontrolü yap (spesifik sorular cache'lenmez — kullanıcıya özel)
     if not is_specific:
         cache_key = _uni_info_cache_key(uni)
         cached = _load_uni_info_cache(cache_key)
@@ -126,28 +141,19 @@ async def uni_info_node(state: AgentState) -> dict:
     else:
         cache_key = None
 
-    # Birinci sorgu: kullanıcının spesifik sorusu — NER'in ürettiği web_query öncelikli
-    specific_query = ner_web_query or f"{uni} {user_text}"
-
-    queries = [
-        specific_query,                                                              # Spesifik soru
-        f"{uni} öğrenci yorumları deneyimleri ekşi sözlük şikayetvar",              # Yorumlar
-        f"{uni} genel bilgi akademik kadro kampüs eğitim kalitesi",                 # Genel
-        f"{uni} burs olanakları KYK YÖK burs başarı bursu 2024 2025 öğrenim ücreti",  # Burs & Ücret
-    ]
-
     raw_buckets: list[list] = []
     try:
-        # 4 sorguyu tek HTTP isteğiyle retriever'a gönder (fast_lookup'taki _ddg_multi_query gibi)
+        # Tüm sorguları tek HTTP isteğiyle retriever'a gönder (fast_lookup'taki _ddg_multi_query gibi)
         all_results = await _asyncio_for_decorators.wait_for(
             _ddg_multi_query(queries, max_results=8),
             timeout=12.0,
         )
-        # Retriever tüm sonuçları flat döndürüyor; 4 bucket'a böl (her biri max 6)
-        chunk = max(1, len(all_results) // 4)
+        # Retriever tüm sonuçları flat döndürüyor; sorgu sayısı kadar bucket'a böl (her biri max 6)
+        n_buckets = len(queries)
+        chunk = max(1, len(all_results) // n_buckets)
         raw_buckets = [
             all_results[i * chunk:(i + 1) * chunk][:6]
-            for i in range(4)
+            for i in range(n_buckets)
         ]
     except Exception as e:
         print(f"[UNI_INFO] 💥 Arama hatası: {e}")
@@ -181,7 +187,7 @@ async def uni_info_node(state: AgentState) -> dict:
             print(f"[UNI_INFO] ⚠️ URL fetch hatası (devam ediliyor): {e}")
     # ────────────────────────────────────────────────────────────────────────
 
-    labels = ["Konu Araştırması", "Öğrenci Yorumları", "Genel & Akademik", "Ücret & Burs"]
+    labels = [f"Arama: {q[:60]}" for q in queries]
 
     assembly = build_grouped_context(
         raw_buckets,

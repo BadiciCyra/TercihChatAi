@@ -1,14 +1,15 @@
 """
 Property-based tests for Research Pipeline
 ===========================================
-# Feature: chat-mode-selection
+# Feature: chat-mode-selection (llm-dynamic-query-generator entegrasyonuna uyarlandı)
 
 Tests Properties 10, 11, and 12 from the design document:
 
 - Property 10: Research Minimum Search Queries
   For any query in research mode that contains an identifiable university
-  name, uni_info_node SHALL invoke _ddg_quick at least 3 times with distinct
-  query strings.
+  name, uni_info_node SHALL run at least 3 distinct web search queries.
+  (Sorgu üretimi artık QueryPlanner'dadır; node QueryPlan.queries'i
+  _ddg_multi_query'ye tek çağrıda iletir.)
   Validates: Requirements 3.2
 
 - Property 11: Research Social Media Exclusion
@@ -43,6 +44,8 @@ for _p in (str(ROOT_DIR), str(AI_DIR)):
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
+
+from utils.query_planner import QueryPlan
 
 # ---------------------------------------------------------------------------
 # Known university names to use in Property 10 strategy
@@ -88,17 +91,12 @@ uni_strategy = st.sampled_from(KNOWN_UNIVERSITIES)
 
 # Text queries that do NOT contain any known university keyword
 # (used in Property 12 — no identifiable university)
-# Includes all UNI_MAPPING keys (lowercased) from utils/extractors.py to
-# ensure Hypothesis-generated strings containing abbreviations like "sü", "kü",
-# "bü" etc. are also filtered out.
 _UNI_KEYWORDS = [
     "üniversite", "universite", "itu", "odtu", "metu", "bogazici", "bilkent",
     "koc", "koç", "sabanci", "sabancı", "hacettepe", "ankara", "istanbul",
     "ege", "marmara", "gazi", "yıldız", "yildiz", "dokuz", "eylul",
     "izmir", "karadeniz", "gebze", "erciyes", "selcuk", "cukurova", "çukurova",
     # UNI_MAPPING abbreviations (lowercased) from utils/extractors.py
-    # These are 2-3 letter abbreviations that the extractor recognises as
-    # university names when they appear as standalone words.
     "i̇tü", "itü", "estü", "odtü", "kü", "sü", "bü", "özü", "yü", "beü",
     "aü", "mef", "i̇ü", "iü", "mü", "bkü", "başkent", "baskent",
     "haliç", "halic", "üsküdar", "uskudar", "acıbadem", "acibadem",
@@ -108,30 +106,20 @@ _UNI_KEYWORDS = [
 
 
 def _has_no_uni_keyword(text: str) -> bool:
-    """Return True when text contains no recognizable university keyword.
-
-    Applies two checks to cover both standard Turkish lowercasing and the
-    special case of U+0130 İ (capital I with dot), which Python lowercases
-    to i+combining-dot rather than plain 'i'.
-    """
-    # Standard check: regular Python lowercase (handles Ü→ü, Ö→ö, etc.)
+    """Return True when text contains no recognizable university keyword."""
     t_standard = text.lower()
     if any(kw in t_standard for kw in _UNI_KEYWORDS):
         return False
 
-    # Secondary check: ASCII-ify Turkish chars (catches İ → i via transliteration)
     import unicodedata
     t_norm = unicodedata.normalize("NFC", text)
     _tr_table = str.maketrans(
-        "\u0130\u015e\u011e\u00dc\u00d6\u00c7\u0131\u015f\u011f\u00fc\u00f6\u00e7",
+        "İŞĞÜÖÇışğüöç",
         "isguocisguoc",
     )
     t_ascii = t_norm.translate(_tr_table).lower()
-    # Check against ASCII-lowercased versions of the keywords
     _UNI_KEYWORDS_ASCII = [
-        kw.translate(str.maketrans(
-            "üöçşğı", "uocsgi"
-        ))
+        kw.translate(str.maketrans("üöçşğı", "uocsgi"))
         for kw in _UNI_KEYWORDS
     ]
     if any(kw in t_ascii for kw in _UNI_KEYWORDS_ASCII):
@@ -175,7 +163,7 @@ _normal_url_strategy = st.sampled_from([
 
 
 # ---------------------------------------------------------------------------
-# Helper: build a minimal AgentState for uni_info_node
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _make_research_state(user_text: str, uni_in_ner: str | None = None) -> dict:
@@ -205,6 +193,71 @@ def _make_search_result(url: str, title: str = "Başlık", snippet: str = "İçe
     return {"url": url, "title": title, "snippet": snippet}
 
 
+def _make_plan(uni: str) -> QueryPlan:
+    """Deterministic 3-query general plan for a university."""
+    return QueryPlan(
+        is_specific=False,
+        queries=[
+            f"{uni} genel bilgi akademik kadro",
+            f"{uni} öğrenci yorumları",
+            f"{uni} burs ücret 2024 2025",
+        ],
+        source="llm",
+    )
+
+
+async def _invoke_uni_info(
+    state: dict,
+    plan: QueryPlan | None,
+    ddg_results: list | None = None,
+    ddg_exception: Exception | None = None,
+    llm_content: str = "Detaylı üniversite analizi. " * 20,
+):
+    """uni_info_node'u dış bağımlılıklar mock'lanmış şekilde çalıştırır.
+
+    Returns:
+        (result, planner_mock, ddg_mock, llm_ainvoke_mock, captured_human_contents)
+    """
+    captured: list[str] = []
+
+    fake_response = MagicMock()
+    fake_response.content = llm_content
+
+    async def fake_llm_ainvoke(messages, **kwargs):
+        for msg in messages:
+            if type(msg).__name__ == "HumanMessage" and hasattr(msg, "content"):
+                captured.append(msg.content)
+        return fake_response
+
+    llm_ainvoke_mock = AsyncMock(side_effect=fake_llm_ainvoke)
+
+    if ddg_exception is not None:
+        ddg_mock = AsyncMock(side_effect=ddg_exception)
+    else:
+        ddg_mock = AsyncMock(return_value=ddg_results if ddg_results is not None else [])
+
+    planner_mock = AsyncMock(return_value=plan)
+
+    with (
+        patch("nodes.uni_info._ddg_multi_query", new=ddg_mock),
+        patch("nodes.uni_info.llm_responder") as mock_llm,
+        patch("nodes.uni_info.query_planner") as mock_planner,
+        patch("nodes.uni_info._extract_uni_llm_fallback", new=AsyncMock(return_value=None)),
+        patch(
+            "nodes.uni_info.fetch_url_content",
+            new=AsyncMock(return_value=MagicMock(success=False, content="", url="")),
+        ),
+        patch("nodes.uni_info._load_uni_info_cache", return_value=None),
+        patch("nodes.uni_info._save_uni_info_cache", return_value=None),
+    ):
+        mock_llm.ainvoke = llm_ainvoke_mock
+        mock_planner.classify_and_generate_queries = planner_mock
+        import nodes.uni_info as uni_module
+        result = await uni_module.uni_info_node(state)
+
+    return result, planner_mock, ddg_mock, llm_ainvoke_mock, captured
+
+
 # ===========================================================================
 # Unit Tests — Example-based
 # ===========================================================================
@@ -213,93 +266,61 @@ def test_uni_info_node_clarification_when_no_uni() -> None:
     """uni_info_node returns clarification when no university is detected."""
     state = _make_research_state("Selam, sana bir şey sormak istiyorum.")
 
-    with patch("nodes.uni_info._ddg_quick") as mock_ddg, \
-         patch("nodes.uni_info.llm_responder") as mock_llm:
+    result, planner_mock, ddg_mock, llm_mock, _ = asyncio.run(
+        _invoke_uni_info(state, plan=None)
+    )
 
-        mock_ddg.return_value = []
-        mock_llm.ainvoke = AsyncMock(return_value=MagicMock(content="cevap"))
-
-        import nodes.uni_info as uni_module
-        result = asyncio.run(
-            uni_module.uni_info_node(state)
-        )
-
-    # Must not call web search or LLM
-    mock_ddg.assert_not_called()
-    mock_llm.ainvoke.assert_not_called()
+    # Must not call planner, web search or LLM
+    planner_mock.assert_not_awaited()
+    ddg_mock.assert_not_awaited()
+    llm_mock.assert_not_awaited()
 
     messages = result.get("messages", [])
     assert len(messages) >= 1
     content = getattr(messages[0], "content", "")
-    # Should ask user to specify university
     assert "üniversite" in content.lower(), (
         f"Expected clarification message mentioning 'üniversite', got: {content!r}"
     )
 
 
 def test_uni_info_node_makes_searches_for_known_uni() -> None:
-    """uni_info_node calls _ddg_quick at least 3 times for a known university."""
-    state = _make_research_state("Boğaziçi Üniversitesi hakkında bilgi ver")
+    """uni_info_node runs all QueryPlan queries (>=3) for a known university."""
+    uni = "Boğaziçi Üniversitesi"
+    state = _make_research_state(f"{uni} hakkında bilgi ver")
 
-    ddg_call_count = 0
-    ddg_queries: list[str] = []
+    ddg_results = [
+        _make_search_result(f"https://example.com/{i}", snippet="içerik " * 20)
+        for i in range(9)
+    ]
 
-    async def mock_ddg(query: str, max_results: int = 8) -> list:
-        nonlocal ddg_call_count
-        ddg_call_count += 1
-        ddg_queries.append(query)
-        return [_make_search_result(f"https://example.com/{ddg_call_count}", snippet="içerik " * 20)]
+    _, _, ddg_mock, _, _ = asyncio.run(
+        _invoke_uni_info(state, plan=_make_plan(uni), ddg_results=ddg_results)
+    )
 
-    with patch("nodes.uni_info._ddg_quick", side_effect=mock_ddg), \
-         patch("nodes.uni_info.llm_responder") as mock_llm:
-
-        fake_response = MagicMock()
-        fake_response.content = "Boğaziçi Üniversitesi hakkında detaylı bilgi " * 20
-        mock_llm.ainvoke = AsyncMock(return_value=fake_response)
-
-        import nodes.uni_info as uni_module
-        asyncio.run(
-            uni_module.uni_info_node(state)
-        )
-
-    assert ddg_call_count >= 3, (
-        f"Expected at least 3 _ddg_quick calls, got {ddg_call_count}"
+    ddg_mock.assert_awaited_once()
+    searched_queries = ddg_mock.await_args.args[0]
+    assert len(searched_queries) >= 3, (
+        f"Expected at least 3 search queries, got {len(searched_queries)}"
     )
 
 
 def test_uni_info_node_excludes_social_media_urls() -> None:
     """uni_info_node filters social media URLs from context passed to LLM."""
-    state = _make_research_state("Hacettepe Üniversitesi hakkında bilgi ver")
+    uni = "Hacettepe Üniversitesi"
+    state = _make_research_state(f"{uni} hakkında bilgi ver")
 
-    captured_human_content: list[str] = []
+    ddg_results = [
+        _make_search_result("https://instagram.com/hacettepe_uni", snippet="Instagram profili " * 10),
+        _make_search_result("https://hacettepe.edu.tr/hakkimizda", snippet="Resmi üniversite sayfası " * 10),
+        _make_search_result("https://facebook.com/hacettepe-group", snippet="Facebook grubu " * 10),
+    ] * 3
 
-    async def mock_ddg(query: str, max_results: int = 8) -> list:
-        return [
-            _make_search_result("https://instagram.com/hacettepe_uni", snippet="Instagram profili " * 10),
-            _make_search_result("https://hacettepe.edu.tr/hakkimizda", snippet="Resmi üniversite sayfası " * 10),
-            _make_search_result("https://facebook.com/hacettepe-group", snippet="Facebook grubu " * 10),
-        ]
+    _, _, _, _, captured = asyncio.run(
+        _invoke_uni_info(state, plan=_make_plan(uni), ddg_results=ddg_results)
+    )
 
-    async def mock_llm_invoke(messages: list) -> MagicMock:
-        for msg in messages:
-            if hasattr(msg, "content") and "hacettepe" in msg.content.lower():
-                captured_human_content.append(msg.content)
-        resp = MagicMock()
-        resp.content = "Hacettepe Üniversitesi hakkında detaylı analiz " * 20
-        return resp
-
-    with patch("nodes.uni_info._ddg_quick", side_effect=mock_ddg), \
-         patch("nodes.uni_info.llm_responder") as mock_llm:
-
-        mock_llm.ainvoke = AsyncMock(side_effect=mock_llm_invoke)
-
-        import nodes.uni_info as uni_module
-        asyncio.run(
-            uni_module.uni_info_node(state)
-        )
-
-    # Check that none of the social media URLs appear in the LLM context
-    for content in captured_human_content:
+    assert captured, "LLM'e HumanMessage gönderilmedi"
+    for content in captured:
         for domain in SOCIAL_MEDIA_DOMAINS:
             assert domain not in content, (
                 f"Social media domain {domain!r} found in LLM context: {content[:200]}"
@@ -307,24 +328,16 @@ def test_uni_info_node_excludes_social_media_urls() -> None:
 
 
 def test_uni_info_node_graceful_error_when_all_searches_fail() -> None:
-    """uni_info_node returns graceful error message when all web searches fail."""
-    state = _make_research_state("Ankara Üniversitesi hakkında bilgi ver")
+    """uni_info_node returns graceful error message when web search fails."""
+    uni = "Ankara Üniversitesi"
+    state = _make_research_state(f"{uni} hakkında bilgi ver")
 
-    async def failing_ddg(query: str, max_results: int = 8) -> list:
-        raise Exception("Network error")
-
-    with patch("nodes.uni_info._ddg_quick", side_effect=failing_ddg), \
-         patch("nodes.uni_info.llm_responder") as mock_llm:
-
-        mock_llm.ainvoke = AsyncMock()
-
-        import nodes.uni_info as uni_module
-        result = asyncio.run(
-            uni_module.uni_info_node(state)
-        )
+    result, _, _, llm_mock, _ = asyncio.run(
+        _invoke_uni_info(state, plan=_make_plan(uni), ddg_exception=Exception("Network error"))
+    )
 
     # LLM must not be called when searches fail
-    mock_llm.ainvoke.assert_not_called()
+    llm_mock.assert_not_awaited()
 
     messages = result.get("messages", [])
     assert len(messages) >= 1
@@ -344,27 +357,19 @@ def test_uni_info_node_clarification_for_no_uni_queries(query: str) -> None:
 
     For any query string in research mode that contains no identifiable
     university name, uni_info_node SHALL return a clarification message asking
-    for the university name, without invoking web search (_ddg_quick) or LLM
-    synthesis (llm_responder).
+    for the university name, without invoking web search or LLM synthesis.
     """
     state = _make_research_state(query)
 
-    with patch("nodes.uni_info._ddg_quick") as mock_ddg, \
-         patch("nodes.uni_info.llm_responder") as mock_llm:
+    result, planner_mock, ddg_mock, llm_mock, _ = asyncio.run(
+        _invoke_uni_info(state, plan=None)
+    )
 
-        mock_ddg.return_value = []
-        mock_llm.ainvoke = AsyncMock(return_value=MagicMock(content="cevap"))
+    # Planner, web search and LLM MUST NOT be called
+    planner_mock.assert_not_awaited()
+    ddg_mock.assert_not_awaited()
+    llm_mock.assert_not_awaited()
 
-        import nodes.uni_info as uni_module
-        result = asyncio.run(
-            uni_module.uni_info_node(state)
-        )
-
-    # Web search and LLM MUST NOT be called
-    mock_ddg.assert_not_called()
-    mock_llm.ainvoke.assert_not_called()
-
-    # Must return a message asking to clarify the university
     messages = result.get("messages", [])
     assert len(messages) >= 1, (
         f"uni_info_node must return at least one message for query={query!r}"
@@ -373,7 +378,6 @@ def test_uni_info_node_clarification_for_no_uni_queries(query: str) -> None:
     assert content, (
         f"Clarification message must be non-empty for query={query!r}"
     )
-    # Clarification must mention üniversite
     assert "üniversite" in content.lower(), (
         f"Clarification message for query={query!r} does not mention 'üniversite'. "
         f"Got: {content!r}"
@@ -391,43 +395,34 @@ def test_uni_info_node_minimum_3_distinct_search_queries(uni: str) -> None:
     """**Validates: Requirements 3.2**
 
     For any query in research mode that contains an identifiable university
-    name, uni_info_node SHALL invoke _ddg_quick at least 3 times with distinct
-    query strings.
+    name, uni_info_node SHALL run at least 3 distinct web search queries
+    (QueryPlan.queries, tek _ddg_multi_query çağrısında).
     """
-    # Use uni_in_ner to guarantee detection even if regex doesn't catch it
     user_text = f"{uni} hakkında bilgi ver"
     state = _make_research_state(user_text, uni_in_ner=uni)
 
-    ddg_queries: list[str] = []
+    ddg_results = [
+        _make_search_result(f"https://example.com/{i}", snippet="üniversite içeriği bilgi " * 20)
+        for i in range(9)
+    ]
 
-    async def spy_ddg(query: str, max_results: int = 8) -> list:
-        ddg_queries.append(query)
-        return [_make_search_result(
-            f"https://example.com/{len(ddg_queries)}",
-            snippet="üniversite içeriği bilgi " * 20,
-        )]
+    _, planner_mock, ddg_mock, _, _ = asyncio.run(
+        _invoke_uni_info(state, plan=_make_plan(uni), ddg_results=ddg_results)
+    )
 
-    with patch("nodes.uni_info._ddg_quick", side_effect=spy_ddg), \
-         patch("nodes.uni_info.llm_responder") as mock_llm:
+    planner_mock.assert_awaited_once()
+    ddg_mock.assert_awaited_once()
+    searched_queries = ddg_mock.await_args.args[0]
 
-        fake_response = MagicMock()
-        fake_response.content = f"{uni} hakkında detaylı üniversite analizi " * 20
-        mock_llm.ainvoke = AsyncMock(return_value=fake_response)
-
-        import nodes.uni_info as uni_module
-        asyncio.run(
-            uni_module.uni_info_node(state)
-        )
-
-    # At least 3 calls
-    assert len(ddg_queries) >= 3, (
-        f"Expected at least 3 _ddg_quick calls for uni={uni!r}, "
-        f"got {len(ddg_queries)}: {ddg_queries}"
+    # At least 3 queries
+    assert len(searched_queries) >= 3, (
+        f"Expected at least 3 search queries for uni={uni!r}, "
+        f"got {len(searched_queries)}: {searched_queries}"
     )
 
     # All query strings must be distinct
-    assert len(set(ddg_queries)) == len(ddg_queries), (
-        f"Expected all distinct query strings, got duplicates: {ddg_queries}"
+    assert len(set(searched_queries)) == len(searched_queries), (
+        f"Expected all distinct query strings, got duplicates: {searched_queries}"
     )
 
 
@@ -457,8 +452,6 @@ def test_research_social_media_exclusion(
     """
     from utils.context_assembly import build_grouped_context
 
-    # Build mixed result buckets: each bucket has both social and normal results
-    # uni_info uses 4 buckets/labels
     single_bucket = (
         [
             _make_search_result(url, snippet="Sosyal medya içeriği " * 10)
@@ -470,7 +463,7 @@ def test_research_social_media_exclusion(
         ]
     )
 
-    mixed_results = [single_bucket] * 4  # 4 buckets matching uni_info's 4 labels
+    mixed_results = [single_bucket] * 4
 
     labels = ["Konu Araştırması", "Öğrenci Yorumları", "Genel & Akademik", "Ücret & Burs"]
 
@@ -481,7 +474,6 @@ def test_research_social_media_exclusion(
         exclude_url_substrings=SOCIAL_MEDIA_DOMAINS,
     )
 
-    # The assembled context blocks must contain none of the social media URLs
     full_context = "\n\n".join(result.context_blocks)
     for social_url in social_urls:
         assert social_url not in full_context, (
@@ -489,7 +481,6 @@ def test_research_social_media_exclusion(
             f"Context excerpt: {full_context[:300]}"
         )
 
-    # Also verify the seen_urls list does not include social media URLs
     for url in result.seen_urls:
         url_lower = url.lower()
         for domain in SOCIAL_MEDIA_DOMAINS:

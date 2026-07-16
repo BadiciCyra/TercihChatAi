@@ -46,6 +46,10 @@ for _p in (str(ROOT_DIR), str(AI_DIR)):
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 
+# Redis client artık app/redis_client.py'de yaşıyor; cache_get/cache_set onu
+# call-time'da okur. Testler mock'u bu modüle bağlar.
+from app import redis_client as _RC
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -213,12 +217,12 @@ def test_guidance_cache_get_returns_none_without_redis_call() -> None:
     mock_redis = MagicMock()
     import app.gate as gate_module
 
-    original_cache = gate_module._cache
-    gate_module._cache = mock_redis
+    original_cache = _RC.cache
+    _RC.cache = mock_redis
     try:
         result = cache_get("rehberlik sorusu", mode="guidance")
     finally:
-        gate_module._cache = original_cache
+        _RC.cache = original_cache
 
     # Must return None (cache skip)
     assert result is None, (
@@ -240,12 +244,12 @@ def test_guidance_cache_set_does_not_write_to_redis() -> None:
     mock_redis = MagicMock()
     import app.gate as gate_module
 
-    original_cache = gate_module._cache
-    gate_module._cache = mock_redis
+    original_cache = _RC.cache
+    _RC.cache = mock_redis
     try:
         cache_set("rehberlik sorusu", "empatik bir cevap metni olabilir", mode="guidance")
     finally:
-        gate_module._cache = original_cache
+        _RC.cache = original_cache
 
     # Redis .setex() must NOT have been called
     mock_redis.setex.assert_not_called()
@@ -358,14 +362,14 @@ def test_guidance_mode_http_skips_all_cache_operations(query: str) -> None:
         # If cache_set was called, verify it was a no-op (no Redis write)
         # This is guaranteed by _cache_key returning None for guidance
         mock_redis = MagicMock()
-        original_c = gate_module._cache
-        gate_module._cache = mock_redis
+        original_c = _RC.cache
+        _RC.cache = mock_redis
         try:
             for write_call in guidance_writes:
                 original_cache_set(write_call[0], write_call[1], mode=write_call[2])
             mock_redis.setex.assert_not_called()
         finally:
-            gate_module._cache = original_c
+            _RC.cache = original_c
 
     finally:
         graph_module.app_graph = original_graph
@@ -389,8 +393,8 @@ def test_guidance_mode_zero_redis_reads_and_writes(query: str) -> None:
     import app.gate as gate_module
 
     mock_redis = MagicMock()
-    original_cache = gate_module._cache
-    gate_module._cache = mock_redis
+    original_cache = _RC.cache
+    _RC.cache = mock_redis
 
     try:
         # Test cache_get — must not touch Redis
@@ -406,7 +410,7 @@ def test_guidance_mode_zero_redis_reads_and_writes(query: str) -> None:
         mock_redis.set.assert_not_called()
 
     finally:
-        gate_module._cache = original_cache
+        _RC.cache = original_cache
 
 
 # ===========================================================================

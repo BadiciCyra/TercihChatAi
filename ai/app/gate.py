@@ -1,16 +1,76 @@
 # gate.py (Final B2B Gateway - Deep Search ReAct Architecture)
+#
+# Bu modül uygulamanın giriş noktasıdır (uvicorn gate:app). Sorumlulukları
+# alt modüllere bölünmüştür:
+#   - app/redis_client.py : paylaşılan Redis client
+#   - app/answer_cache.py : cevap önbelleği (cache_get / cache_set)
+#   - app/auth.py         : API key doğrulama + rate limiting
+#   - app/admin.py        : Redis key yönetim endpoint'leri (APIRouter)
+# Geriye dönük uyumluluk için bu alt modüllerin isimleri aşağıda re-export edilir.
 import time
 import logging
 import json
-import hashlib
-import os
-import re
-from fastapi import FastAPI, Depends, Security, HTTPException, status, Request
-from fastapi.security import APIKeyHeader
+from dataclasses import dataclass
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Literal, Optional
 from pydantic import BaseModel, field_validator
+
+
+@dataclass
+class ThreadResolution:
+    """Encapsulates the result of resolving a session_id to a LangGraph thread_id.
+
+    thread_id             — the id to pass to the LangGraph checkpointer.
+    is_anonymous          — True when a fresh anon thread was generated (no history).
+    effective_session_id  — the value to echo back to the frontend as session_id.
+    """
+    thread_id: str
+    is_anonymous: bool
+    effective_session_id: str  # what to echo back to frontend
+
+
+_MAX_SESSION_ID_LENGTH = 256
+
+
+def resolve_thread_id(session_id: "str | None") -> ThreadResolution:
+    """Resolve a frontend-supplied session_id to a LangGraph thread_id.
+
+    Resolution rules (Requirements 1.1, 1.3, 1.4, 1.5, 1.6):
+      - Valid session_id (non-empty, not "default_session", ≤256 chars):
+          thread_id = session_id  (history preserved)
+      - None, "", "default_session", or >256 chars:
+          thread_id = f"anon:{uuid4().hex}"  (no history, unique per request)
+
+    Returns a ThreadResolution with:
+      - thread_id             : the id to use in the LangGraph config
+      - is_anonymous          : True when a fresh anon thread was generated
+      - effective_session_id  : what to echo back to the frontend
+    """
+    from uuid import uuid4
+
+    is_invalid = (
+        session_id is None
+        or session_id == ""
+        or session_id == "default_session"
+        or len(session_id) > _MAX_SESSION_ID_LENGTH
+    )
+
+    if is_invalid:
+        anon_thread_id = f"anon:{uuid4().hex}"
+        return ThreadResolution(
+            thread_id=anon_thread_id,
+            is_anonymous=True,
+            effective_session_id=anon_thread_id,
+        )
+    else:
+        return ThreadResolution(
+            thread_id=session_id,
+            is_anonymous=False,
+            effective_session_id=session_id,
+        )
+
 
 # Bizim oluşturduğumuz modüller
 from app.graph import app_graph, select_entry_point  # Modüler LangGraph — graph.py
@@ -24,190 +84,39 @@ from app.monitoring import (
     record_request,
 )
 
-# --- CACHE: Redis ile aynı/benzer soruları cache'le (LLM çağrısı yapmadan döner) ---
-import redis as _redis_sync
-_REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-_CACHE_TTL_SECONDS = int(os.getenv("AI_CACHE_TTL", "21600"))  # 6 saat default
-try:
-    _cache = _redis_sync.from_url(_REDIS_URL, decode_responses=True, socket_timeout=2)
-    _cache.ping()
-    print(f"[CACHE] ✅ Redis cache aktif (TTL={_CACHE_TTL_SECONDS}sn)")
-except Exception as _e:
-    print(f"[CACHE] ⚠️ Redis bağlanamadı, cache devre dışı: {_e}")
-    _cache = None
-
-
-def _normalize_for_cache(text: str) -> str:
-    """Benzer soruları aynı cache key'e eşle: küçült, fazla boşluk kaldır,
-    yaygın typo'ları normalize et.
-
-    NOT: Kelimeler SIRALAMA olmadan korunur — Türkçe'de kelime sırası anlam
-    değiştirir ("yazılım geliştirme nasıl" ≠ "nasıl yazılım geliştirme bölümü").
-    Sadece küçük harf + Türkçe ASCII dönüşümü + noktalama temizliği yapılır.
-    """
-    if not text:
-        return ""
-    t = text.lower().strip()
-    # Türkçe karakterleri ASCII'ye çevir (typo toleransı)
-    tr_map = str.maketrans("çğıöşüâî", "cgiosuai")
-    t = t.translate(tr_map)
-    # Sadece alfanumerik + boşluk kalsın
-    t = re.sub(r'[^a-z0-9\s]', ' ', t)
-    # Çoklu boşlukları teke indir — kelime sırasını KORU (sıralama yok)
-    return ' '.join(t.split())
-
-
-# Cache namespace versiyon: değiştirilirse tüm eski cache geçersiz olur (auto-invalidation)
-# v4: score_type suffix toleransı + web supplement zorunlu
-# v5: kelime sıralama normalizasyonu kaldırıldı, casual cevaplar cache'lenmiyor
-# v6: uni_info_node spesifik sorgu düzeltmesi, planner max 2 alt soru
-_CACHE_NS = os.getenv("AI_CACHE_NS", "v6")
-
-# Cache'lenmemesi gereken "kötü cevap" göstergeleri (bunlar cache'e yazılmaz)
-_BAD_ANSWER_MARKERS = (
-    "bulunamadı",
-    "kriterlere uygun",
-    "teknik bir sorun",
-    "an error occurred",
-    "hata oluştu",
-    "tekrar dene",
-    "tekrar sorar mısınız",
-    "yeterli kaynak",          # "web'den yeterli kaynak çıkmadı" fallback mesajları
-    "yeterli bilgi",           # "yeterli bilgi toplayamadım" fallback mesajları
-    "web araması yapamıyorum", # servis hatası fallback'leri
-    # Casual/sohbet cevapları — bunlar kullanıcıya özel, cache'e girmemeli
-    "kanka ",
-    "kanka,",
-    "üzülme",
-    "hayal kırıklığı",
-    "yalnız değilsin",
-    "birlikte bakalım",
-    "beraber bakalım",
+# ── Alt modüller ────────────────────────────────────────────────────────────
+from app import redis_client
+from app.admin import router as admin_router
+# Geriye dönük uyumluluk re-export'ları (testler ve dış importlar app.gate.X bekler)
+from app.answer_cache import (  # noqa: F401
+    _normalize_for_cache,
+    _CACHE_NS,
+    _CACHE_TTL_SECONDS,
+    _BAD_ANSWER_MARKERS,
+    _is_bad_answer,
+    _TOPIC_KEYWORDS,
+    _is_relevant_to_query,
+    _MODE_PREFIX,
+    _cache_key,
+    cache_get,
+    cache_set,
 )
-
-
-def _is_bad_answer(answer: str) -> bool:
-    if not answer:
-        return True
-    a = answer.lower()
-    return any(m in a for m in _BAD_ANSWER_MARKERS)
-
-
-# Soruda geçen spesifik konu kelimeleri — cevabın başlığında yoksa cache geçersiz say
-_TOPIC_KEYWORDS = {
-    "kulüp": ["kulüp", "topluluk", "sosyal"],
-    "yurt": ["yurt", "barınak", "konaklama"],
-    "staj": ["staj", "pratik", "internship"],
-    "burs": ["burs", "indirim", "ücretsiz"],
-    "ücret": ["ücret", "fiyat", "tl", "para"],
-    "puan": ["puan", "taban", "sıralama"],
-    "yorum": ["yorum", "deneyim", "öğrenci", "memnun"],
-    "kariyer": ["kariyer", "iş", "mezun", "istihdam"],
-    "müfredat": ["müfredat", "ders", "program", "eğitim"],
-}
-
-
-def _is_relevant_to_query(query: str, answer: str) -> bool:
-    """Cache'ten gelen cevabın soruyla alakalı olup olmadığını kontrol et.
-
-    Soruda spesifik bir konu kelimesi varsa (kulüp, yurt, staj vb.),
-    cevabın ilk 800 karakterinde (başlık/özet kısmında) o konuya dair
-    bir kelime geçmiyorsa alakasız say → cache miss.
-    """
-    q = query.lower()
-    a_head = answer.lower()[:800]  # Sadece başlık/özet kısmına bak
-
-    for topic, indicators in _TOPIC_KEYWORDS.items():
-        if topic in q:
-            if not any(ind in a_head for ind in indicators):
-                print(f"[CACHE] ⚠️ Alakasız cache: soruda '{topic}' var ama cevap başında yok")
-                return False
-    return True
-
-
-_MODE_PREFIX: dict = {
-    "wizard":   "wiz",
-    "research": "res",
-    "career":   "car",
-    None:       "ner",
-    # guidance: cache kullanılmaz — _cache_key None döner
-}
-
-
-def _cache_key(mode: Optional[str], query: str) -> Optional[str]:
-    """Mode-prefixed cache key üret.
-
-    guidance modunda None döner (cache skip sinyali):
-    cache_get / cache_set çağrıları None sonucunda işlemi atlamalıdır.
-
-    Diğer modlar için format:
-        "ai:answer:{_CACHE_NS}:{prefix}:{md5(normalized_query)}"
-    Örnekler:
-        wizard   → "ai:answer:v6:wiz:<md5>"
-        research → "ai:answer:v6:res:<md5>"
-        career   → "ai:answer:v6:car:<md5>"
-        None/NER → "ai:answer:v6:ner:<md5>"
-        guidance → None  (cache skip)
-    """
-    if mode == "guidance":
-        return None
-    prefix = _MODE_PREFIX.get(mode, "ner")
-    norm = _normalize_for_cache(query)
-    return f"ai:answer:{_CACHE_NS}:{prefix}:{hashlib.md5(norm.encode()).hexdigest()}"
-
-
-def cache_get(query: str, mode: Optional[str] = None) -> "str | None":
-    if not _cache:
-        return None
-    key = _cache_key(mode, query)
-    if key is None:
-        # guidance modu veya başka cache-skip sinyali — okuma atla
-        return None
-    try:
-        val = _cache.get(key)
-        if val and _is_bad_answer(val):
-            # Eski "bulunamadı" tarzı cache'i sil, taze cevap üretsin
-            _cache.delete(key)
-            print(f"[CACHE] 🗑️ Eski kötü cevap silindi: '{query[:50]}'")
-            record_cache_miss()
-            return None
-        if val and not _is_relevant_to_query(query, val):
-            # Cevap soruyla alakasız — sil ve yeniden hesaplat
-            _cache.delete(key)
-            print(f"[CACHE] 🗑️ Alakasız cache silindi: '{query[:50]}'")
-            record_cache_miss()
-            return None
-        if val:
-            print(f"[CACHE] ⚡ HIT: '{query[:50]}' → cache'ten dönülüyor")
-            record_cache_hit()
-        return val
-    except Exception as e:
-        print(f"[CACHE] get hatası: {e}")
-        record_error(type(e).__name__, source="cache_get")
-        return None
-
-
-def cache_set(query: str, answer: str, mode: Optional[str] = None) -> None:
-    if not _cache or not answer:
-        return
-    key = _cache_key(mode, query)
-    if key is None:
-        # guidance modu veya başka cache-skip sinyali — yazma atla
-        return
-    if _is_bad_answer(answer):
-        print(f"[CACHE] ⛔ Kötü cevap (bulunamadı/hata) cache'lenmedi: '{query[:50]}'")
-        return
-    # Çok kısa yanıtları cache'leme — fallback/hata mesajları genellikle kısadır
-    if len(answer) < 200:
-        print(f"[CACHE] ⛔ Çok kısa yanıt ({len(answer)} byte) cache'lenmedi: '{query[:50]}'")
-        return
-    try:
-        _cache.setex(key, _CACHE_TTL_SECONDS, answer)
-        print(f"[CACHE] 💾 SET: '{query[:50]}' ({len(answer)} byte, {_CACHE_TTL_SECONDS}sn)")
-        record_cache_set()
-    except Exception as e:
-        print(f"[CACHE] set hatası: {e}")
-        record_error(type(e).__name__, source="cache_set")
+from app.auth import (  # noqa: F401
+    API_KEY_NAME,
+    api_key_header,
+    _PLAN_LIMITS,
+    _RATE_WINDOW,
+    _local_rate,
+    _check_rate_local,
+    _check_rate_redis,
+    check_rate_limit,
+    _load_client_from_redis,
+    _load_client_from_env,
+    _DEV_FALLBACK_KEYS,
+    _ALLOW_DEV_FALLBACK,
+    _ALLOW_ANONYMOUS,
+    get_current_dershane,
+)
 
 # --- 1. AYARLAR VE LOGLAMA ---
 logging.basicConfig(level=logging.INFO)
@@ -247,189 +156,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 3. GÜVENLİK (API KEY) + RATE LIMITING ---
-API_KEY_NAME = "X-School-Key"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-
-# ── Plan tanımları: dakika başına istek limiti ──────────────────────────────
-_PLAN_LIMITS: dict[str, int] = {
-    "free":     int(os.getenv("RATE_LIMIT_FREE",     "5")),    # 5 req/dak
-    "gold":     int(os.getenv("RATE_LIMIT_GOLD",     "30")),   # 30 req/dak
-    "platinum": int(os.getenv("RATE_LIMIT_PLATINUM", "120")),  # 120 req/dak
-    "guest":    int(os.getenv("RATE_LIMIT_GUEST",    "2")),    # 2 req/dak (anonim)
-}
-_RATE_WINDOW = 60  # saniye cinsinden pencere
-
-# ── Fallback: Redis yoksa in-process basit sayaç ───────────────────────────
-_local_rate: dict[str, list] = {}  # {key: [timestamp, ...]}
-
-def _check_rate_local(api_key: str, limit: int) -> bool:
-    """Redis yoksa in-process sliding window rate check. Thread-safe değil ama
-    single-process dev ortamında yeterli."""
-    now = time.time()
-    window_start = now - _RATE_WINDOW
-    hits = _local_rate.get(api_key, [])
-    hits = [t for t in hits if t > window_start]
-    if len(hits) >= limit:
-        return False  # limit aşıldı
-    hits.append(now)
-    _local_rate[api_key] = hits
-    return True
-
-def _check_rate_redis(api_key: str, limit: int) -> bool:
-    """Redis sliding window rate limiting (atomic INCR + EXPIRE)."""
-    if not _cache:
-        return _check_rate_local(api_key, limit)
-    try:
-        bucket = f"ai:rate:{api_key}:{int(time.time() // _RATE_WINDOW)}"
-        pipe = _cache.pipeline()
-        pipe.incr(bucket)
-        pipe.expire(bucket, _RATE_WINDOW * 2)
-        count, _ = pipe.execute()
-        return int(count) <= limit
-    except Exception as e:
-        logger.warning(f"[RATE] Redis rate check hatası: {e}, in-process fallback")
-        return _check_rate_local(api_key, limit)
-
-def check_rate_limit(api_key: str, plan: str) -> bool:
-    """Planın dakika limitini kontrol et. True = istek kabul, False = limit aşıldı."""
-    limit = _PLAN_LIMITS.get(plan, _PLAN_LIMITS["free"])
-    return _check_rate_redis(api_key, limit)
-
-# ── API Key doğrulama: Redis → .env fallback → hard-coded fallback ──────────
-# Öncelik sırası:
-#   1. Redis'te ai:apikey:<key> hash'i varsa → oradan oku
-#   2. Env değişkenleri: API_KEY_<KEY>=name:plan formatında
-#   3. Hard-coded fallback (sadece geliştirme ortamı için)
-
-def _load_client_from_redis(api_key: str) -> dict | None:
-    """Redis'ten müşteri bilgisini al. Hash key: ai:apikey:<key>"""
-    if not _cache:
-        return None
-    try:
-        data = _cache.hgetall(f"ai:apikey:{api_key}")
-        if data and data.get("name"):
-            return {"name": data["name"], "plan": data.get("plan", "free")}
-    except Exception as e:
-        logger.warning(f"[AUTH] Redis key lookup hatası: {e}")
-    return None
-
-def _load_client_from_env(api_key: str) -> dict | None:
-    """Env değişkeninden müşteri yükle.
-    Format: API_KEY_MYKEY123=Okul Adı:gold  veya  API_KEY_MYKEY123=Okul Adı
-    """
-    # Env key'i: API_KEY_ + büyük harf ve alt çizgi
-    safe = api_key.upper().replace("-", "_")
-    val = os.getenv(f"API_KEY_{safe}", "")
-    if not val:
-        return None
-    parts = val.split(":", 1)
-    name = parts[0].strip()
-    plan = parts[1].strip() if len(parts) > 1 else "free"
-    return {"name": name, "plan": plan}
-
-# Geliştirme ortamı fallback key'leri — production'da bu dict boş bırakılabilir
-# ya da tamamen kaldırılabilir.
-_DEV_FALLBACK_KEYS: dict[str, dict] = {
-    "test_key": {"name": "Test Lisesi", "plan": "free"},
-}
-# Production'da fallback'i devre dışı bırakmak için env değişkeni:
-_ALLOW_DEV_FALLBACK = os.getenv("ALLOW_DEV_FALLBACK", "true").lower() == "true"
-# Anonim erişime izin ver/verme:
-_ALLOW_ANONYMOUS   = os.getenv("ALLOW_ANONYMOUS",    "true").lower() == "true"
-
-async def get_current_dershane(api_key: str = Security(api_key_header)) -> dict:
-    """API key doğrulama + rate limiting.
-
-    Doğrulama sırası:
-    1. Redis'te kayıtlı key
-    2. Env değişkeni (API_KEY_<KEY>=isim:plan)
-    3. Dev fallback dict (ALLOW_DEV_FALLBACK=true ise)
-    4. Anonim izin (ALLOW_ANONYMOUS=true ve key yoksa)
-    """
-    client_info: dict | None = None
-
-    if api_key:
-        # 1. Redis
-        client_info = _load_client_from_redis(api_key)
-        # 2. Env
-        if not client_info:
-            client_info = _load_client_from_env(api_key)
-        # 3. Dev fallback
-        if not client_info and _ALLOW_DEV_FALLBACK:
-            client_info = _DEV_FALLBACK_KEYS.get(api_key)
-
-    if not client_info:
-        if _ALLOW_ANONYMOUS:
-            client_info = {"name": "Anonim Kullanıcı", "plan": "guest"}
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="❌ Geçersiz veya eksik API Anahtarı"
-            )
-
-    # Rate limiting
-    key_for_rate = api_key or "anonymous"
-    if not check_rate_limit(key_for_rate, client_info["plan"]):
-        limit = _PLAN_LIMITS.get(client_info["plan"], 5)
-        logger.warning(f"[RATE] 🚫 Limit aşıldı: {client_info['name']} ({client_info['plan']}) — {limit} req/dak")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"⏱️ Dakika limiti aşıldı ({limit} istek/dak). Lütfen bekleyin.",
-            headers={"Retry-After": str(_RATE_WINDOW)},
-        )
-
-    return client_info
-
-
-# --- 🔧 YÖNETİM ENDPOINTLERİ (Redis key yönetimi) ---
-# Bu endpointler internal kullanım içindir. Production'da ayrı bir admin key ile koruyun.
-
-_ADMIN_KEY = os.getenv("ADMIN_API_KEY", "")
-
-@app.post("/admin/keys", include_in_schema=False)
-async def add_api_key(
-    key: str, name: str, plan: str = "free",
-    admin: str = Security(APIKeyHeader(name="X-Admin-Key", auto_error=False))
-):
-    """Yeni bir API key ekle veya güncelle (Redis'e yazar)."""
-    if _ADMIN_KEY and admin != _ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Admin key geçersiz")
-    if not _cache:
-        raise HTTPException(status_code=503, detail="Redis bağlantısı yok")
-    _cache.hset(f"ai:apikey:{key}", mapping={"name": name, "plan": plan})
-    logger.info(f"[ADMIN] ✅ Key eklendi/güncellendi: {key} → {name} ({plan})")
-    return {"ok": True, "key": key, "name": name, "plan": plan}
-
-
-@app.delete("/admin/keys/{key}", include_in_schema=False)
-async def delete_api_key(
-    key: str,
-    admin: str = Security(APIKeyHeader(name="X-Admin-Key", auto_error=False))
-):
-    """Bir API key'i sil."""
-    if _ADMIN_KEY and admin != _ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Admin key geçersiz")
-    if not _cache:
-        raise HTTPException(status_code=503, detail="Redis bağlantısı yok")
-    deleted = _cache.delete(f"ai:apikey:{key}")
-    return {"ok": bool(deleted), "key": key}
-
-@app.get("/admin/keys", include_in_schema=False)
-async def list_api_keys(
-    admin: str = Security(APIKeyHeader(name="X-Admin-Key", auto_error=False))
-):
-    """Kayıtlı tüm API key'leri listele."""
-    if _ADMIN_KEY and admin != _ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Admin key geçersiz")
-    if not _cache:
-        raise HTTPException(status_code=503, detail="Redis bağlantısı yok")
-    keys = _cache.keys("ai:apikey:*")
-    result = []
-    for k in keys:
-        data = _cache.hgetall(k)
-        result.append({"key": k.replace("ai:apikey:", ""), **data})
-    return {"keys": result, "count": len(result)}
+# --- 3. ADMIN ENDPOINTLERİ (Redis key yönetimi) ---
+# Endpoint tanımları app/admin.py içinde; buradan uygulamaya bağlanır.
+app.include_router(admin_router)
 
 # --- 4. İSTEK MODELİ ---
 ChatMode = Literal["wizard", "research", "career", "guidance"]
@@ -473,6 +202,7 @@ async def ask_intelligent_system(
     request: Request,
     client_info: dict = Depends(get_current_dershane)
 ):
+    from fastapi import HTTPException, status
     # İstek gövdesini esnekçe işle (string, dict, nested)
     try:
         payload = await request.json()
@@ -527,12 +257,6 @@ async def ask_intelligent_system(
             detail="Input should be a valid dictionary or object to extract fields from"
         )
 
-   
-    # request.json() bir kez okundu (yukarıda payload olarak).
-    # req zaten yukarıda AskRequest(**payload) ile parse edildi.
-    # Eski "robust body parsing" bloğu kaldırıldı — çift okuma sorunu yarattığından
-    # body her zaman boş geliyordu.
-
     school_name = client_info["name"]
     logger.info(f"📨 [İSTEK] Kurum: {school_name} | Soru: {req.query}")
     request.state.cache_hit = False
@@ -554,15 +278,15 @@ async def ask_intelligent_system(
     tracker = B2BTokenTracker(school_name=school_name, session_id=req.session_id)
 
     # B. LangGraph Config Hazırla
-    # thread_id: Her istek kendi izole thread'inde çalışır.
-    # Checkpointer'daki geçmiş konuşmalar farklı sorulara sızmasın diye
-    # her istek için benzersiz bir thread_id üretiyoruz.
-    # Kullanıcının session_id'si rate-limit ve token takibi için kullanılıyor,
-    # ama LangGraph state'i izole tutmak için request-scoped id gerekli.
-    import uuid as _uuid
-    request_thread_id = f"{req.session_id}:{_uuid.uuid4().hex}"
+    # thread_id: session_id geçerliyse (boş, None veya "default_session" değilse)
+    # doğrudan thread_id olarak kullanılır → aynı oturumdaki tüm mesajlar aynı
+    # LangGraph thread'inde (checkpointer memory'de) tutulur (Req 1.1, 1.2).
+    # Geçersiz session_id durumunda her istek için benzersiz anon thread üretilir
+    # (Req 1.3, 1.5, 1.6). Rate-limit ve token sayaçları hâlâ req.session_id
+    # (orijinal değer) üzerinden tutulur (Req 1.7).
+    thread_resolution = resolve_thread_id(req.session_id)
     config = {
-        "configurable": {"thread_id": request_thread_id},
+        "configurable": {"thread_id": thread_resolution.thread_id},
         "callbacks": [tracker]
     }
 
@@ -695,6 +419,7 @@ async def ask_intelligent_system(
 
         return {
             "answer": final_answer,
+            "session_id": thread_resolution.effective_session_id,
             "school": school_name,
             "cached": False,
             "usage": {

@@ -1,0 +1,66 @@
+# Local geliştirme ortamı — TercihChatAi backend servisleri
+#
+# Kullanım:
+#   1. Repo kökünde .env dosyası oluştur:  cp .env.example .env  (ve GEMINI_API_KEY doldur)
+#   2. docker compose up --build
+#   3. Web arayüzü için ayrı terminalde:  cd web && npm run dev  (aşağıdaki nota bak)
+#
+# Servisler:
+#   redis        6379  — cache + rate limit (opsiyonel; yoksa gateway yine çalışır)
+#   ai-reranker  8002  — sentence-transformers re-ranking (ilk açılışta model indirir)
+#   ai-retriever 8000  — YÖK Atlas + DDG web araması (Playwright)
+#   ai-gateway   8003  — ana API (dışarıya açık tek servis)
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  ai-reranker:
+    build:
+      context: ./ai
+    image: tercih-ai:local
+    command: uvicorn re-rank:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+
+  ai-retriever:
+    build:
+      context: ./ai
+    image: tercih-ai:local
+    command: uvicorn retrieve:app --host 0.0.0.0 --port 8000
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      RERANKER_URL: http://ai-reranker:8002
+    depends_on:
+      - redis
+      - ai-reranker
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  ai-gateway:
+    build:
+      context: ./ai
+    image: tercih-ai:local
+    command: uvicorn gate:app --host 0.0.0.0 --port 8003
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY .env dosyasında tanımlı olmalı}
+      # Model adları — gemini-2.5-flash-lite yeni kullanıcılara kapalı (404);
+      # güncel modele çevrildi. .env'den GEMINI_FAST_MODEL/SMART_MODEL ile değiştirilebilir.
+      GEMINI_FAST_MODEL: ${GEMINI_FAST_MODEL:-gemini-2.5-flash}
+      GEMINI_SMART_MODEL: ${GEMINI_SMART_MODEL:-gemini-2.5-flash}
+      REDIS_URL: redis://redis:6379/0
+      RETRIEVER_URL: http://ai-retriever:8000
+      # Local geliştirme: test_key ve anonim erişime izin ver
+      ALLOW_DEV_FALLBACK: "true"
+      ALLOW_ANONYMOUS: "true"
+    depends_on:
+      - redis
+      - ai-retriever
+    ports:
+      - "8003:8003"
+    restart: unless-stopped

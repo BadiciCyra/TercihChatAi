@@ -1,7 +1,7 @@
 """
 career_info_node — Kariyer ve Bölüm Araştırma Pipeline'ı
 
-3 paralel web araması (müfredat, kariyer/maaş, istihdam istatistikleri) → URL fetch → LLM sentezi.
+QueryPlanner ile dinamik sorgu üretimi → paralel web araması → URL fetch → LLM sentezi.
 Bölüm tespit edilemezse yalnızca açıklama mesajı döner (arama veya LLM çağrılmaz).
 """
 import asyncio as _asyncio_for_decorators
@@ -14,6 +14,7 @@ from prompts.career_info import _CAREER_INFO_SYSTEM_PROMPT
 from utils.validators import get_msg_content, strip_react_thoughts
 from utils.decorators import validate_node_input, validate_node_output, with_error_recovery
 from utils.extractors import _extract_program_from_text, _extract_program_llm_fallback
+from utils.query_planner import query_planner
 from utils.context_assembly import build_grouped_context
 from utils.link_fetcher import fetch_url_content
 from nodes.fast_lookup import _ddg_quick
@@ -96,8 +97,14 @@ def _extract_dept_from_text(text: str) -> Optional[str]:
 async def career_info_node(state: AgentState) -> dict:
     """
     Kariyer bilgi ve müfredat araştırma node'u.
+
+    Yollar:
+    - dept yok: açıklama mesajı döner — QueryPlanner, arama ve LLM çağrılmaz.
+    - dept mevcut: QueryPlanner sınıflandırır ve sorguları üretir;
+      is_specific=True → odaklı yanıt (Yol C), False → tam şablon (Yol D).
+
     1. Bölüm/alan adını tespit eder (regex veya NER context)
-    2. 3 paralel web araması yapar (müfredat, kariyer/maaş, istihdam)
+    2. QueryPlanner ile sınıflandırma + dinamik sorgu üretimi (LLM, fallback'li)
     3. Toplanan snippet'leri LLM'e verir
     4. LLM kariyer odaklı yapılandırılmış markdown yanıt üretir
     """
@@ -112,6 +119,7 @@ async def career_info_node(state: AgentState) -> dict:
         # LLM fallback — alias tablosunda olmayan bölümler için
         dept = await _extract_program_llm_fallback(user_text) or ""
 
+    # dept boş → QueryPlanner çağrılmaz, açıklama mesajı döner (Requirement 6.6, 6.7)
     if not dept:
         clarification = (
             "Hangi bölüm veya alanı araştırmak istediğini belirtir misin? "
@@ -119,13 +127,41 @@ async def career_info_node(state: AgentState) -> dict:
         )
         return {"messages": [AIMessage(content=clarification)]}
 
-    print(f"[CAREER_INFO] 🧭 Bölüm araştırılıyor: {dept}")
+    # Sınıflandırma + sorgu üretimi — QueryPlanner (LLM tabanlı, Redis cache'li)
+    try:
+        plan = await query_planner.classify_and_generate_queries(
+            user_text=user_text,
+            entity_name=dept,
+            mode="career",
+        )
+    except Exception as e:
+        print(f"[CAREER_INFO] 💥 QueryPlanner hatası: {e}")
+        plan = None
 
-    queries = [
-        f"{dept} bölümü müfredat ders içerikleri",
-        f"{dept} mezunu kariyer maaş iş ilanları",
-        f"{dept} istihdam oranı YÖK istatistik",
-    ]
+    if plan is None or not plan.queries:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        f"## 🧭 {dept}\n\n"
+                        "Şu an web araması yapamıyorum, lütfen birazdan tekrar dene."
+                    )
+                )
+            ]
+        }
+
+    is_career_specific = plan.is_specific
+    queries = plan.queries
+    print(
+        f"[CAREER_INFO] 🧭 Bölüm araştırılıyor: {dept} "
+        f"(spesifik={is_career_specific}, {len(queries)} sorgu, source={plan.source})"
+    )
+
+    # Yol C (spesifik) / Yol D (genel) sinyali — QueryPlan.is_specific'e göre
+    if is_career_specific:
+        _human_content_signal = "Soru tipi: SPESİFİK — sadece sorulan konuyu cevapla, tam şablon doldurma"
+    else:
+        _human_content_signal = "Soru tipi: GENEL — tam kariyer analizi yap"
 
     raw_buckets: list[list] = []
     try:
@@ -163,7 +199,7 @@ async def career_info_node(state: AgentState) -> dict:
             ]
         }
 
-    labels = ["Müfredat & Dersler", "Kariyer & Maaş", "İstihdam İstatistikleri"]
+    labels = [f"Arama: {q[:60]}" for q in queries]
 
     assembly = build_grouped_context(
         raw_buckets,
@@ -221,9 +257,10 @@ async def career_info_node(state: AgentState) -> dict:
     )
 
     human_content = (
+        f"{_human_content_signal}\n\n"
         f"Bölüm: {dept}\n"
         f"Kullanıcı sorusu: {user_text}\n\n"
-        f"Aşağıdaki web arama sonuçlarını kullanarak detaylı kariyer analizi yaz:\n\n"
+        f"Aşağıdaki web arama sonuçlarını kullanarak {'odaklı yanıt' if is_career_specific else 'detaylı kariyer analizi'} yaz:\n\n"
         f"{web_context}"
     )
 
@@ -238,7 +275,7 @@ async def career_info_node(state: AgentState) -> dict:
         answer = strip_react_thoughts(answer)
         if answer and len(answer.strip()) > 100:
             print(f"[CAREER_INFO] ✅ LLM synthesis tamamlandı ({len(answer)} karakter)")
-            return {"messages": [AIMessage(content=answer)]}
+            return {"messages": [AIMessage(content=answer)], "is_career_specific": is_career_specific}
         print("[CAREER_INFO] ⚠️ LLM çok kısa yanıt verdi, fallback'e geçiliyor")
     except Exception as e:
         print(f"[CAREER_INFO] ⚠️ LLM hatası, snippet fallback kullanılıyor: {e}")

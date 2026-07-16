@@ -376,16 +376,16 @@ def test_guidance_cache_get_returns_none_without_redis_read() -> None:
     receive a cached response when in guidance mode.
     """
     from app.gate import cache_get
-    import app.gate as gate_module
+    from app import redis_client as _RC
 
     mock_redis = MagicMock()
-    original_cache = gate_module._cache
-    gate_module._cache = mock_redis
+    original_cache = _RC.cache
+    _RC.cache = mock_redis
 
     try:
         result = cache_get("rehberlik ve motivasyon sorusu", mode="guidance")
     finally:
-        gate_module._cache = original_cache
+        _RC.cache = original_cache
 
     assert result is None, (
         f"cache_get with mode='guidance' must return None (skip signal), got {result!r}"
@@ -400,17 +400,17 @@ def test_guidance_cache_set_does_not_write_redis() -> None:
     write to Redis regardless of the answer content.
     """
     from app.gate import cache_set
-    import app.gate as gate_module
+    from app import redis_client as _RC
 
     mock_redis = MagicMock()
-    original_cache = gate_module._cache
-    gate_module._cache = mock_redis
+    original_cache = _RC.cache
+    _RC.cache = mock_redis
 
     try:
         long_answer = "Üniversite tercih süreci zor olabilir ama birlikte bakabiliriz. " * 5
         cache_set("rehberlik sorusu", long_answer, mode="guidance")
     finally:
-        gate_module._cache = original_cache
+        _RC.cache = original_cache
 
     mock_redis.setex.assert_not_called()
     mock_redis.set.assert_not_called()

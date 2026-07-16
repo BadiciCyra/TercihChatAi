@@ -139,3 +139,6 @@ class AgentState(TypedDict):
     # Pipeline içindeki hiçbir node bu alanı DEĞİŞTİRMEMELİDİR.
     # Geçerli değerler: "wizard" | "research" | "career" | "guidance" | None
     # None → NER otomatik yönlendirme (geriye dönük uyumluluk)
+    # YENİ — sorgu spesifiklik bayrakları (Requirements: 1.1, 1.3, 1.5)
+    is_specific: Optional[bool]          # Set by uni_info_node
+    is_career_specific: Optional[bool]   # Set by career_info_node
