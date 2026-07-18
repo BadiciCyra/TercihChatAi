@@ -33,6 +33,8 @@ except ImportError:
 from pydantic import BaseModel
 from readability import Document
 
+from program_name import format_program_adi
+
 def filter_broken_markdown(content: str) -> str:
     """Bozuk/uzun markdown tablolarını ve gereksiz tekrarları filtreler."""
     if not content or len(content) < 80:
@@ -273,8 +275,9 @@ def generate_markdown_table_from_results(data_list):
             uni_clean = uni_raw.replace("ÜNİVERSİTESİ", "Ü.").replace("YÜKSEK TEKNOLOJİ ENSTİTÜSÜ", "İYTE").replace("TEKNİK Ü.", "TÜ.")
             uni = f"**{uni_clean[:25]}**"
 
-            bol = str(item.get('program_adi', '-')).replace("Mühendisliği", "Müh.").replace("Öğretmenliği", "Öğr.")
-            bol = f"{bol[:22]}.." if len(bol) > 22 else bol
+            # Program adını kısalt ama UOLP/ortak program, kampüs, İÖ gibi
+            # öğrenciyi yanıltacak kritik nitelemeleri KORU (bkz. program_name.py)
+            bol = format_program_adi(item.get('program_adi', '-'))
 
             yil = str(item.get('current_year', '-'))
             kont = str(item.get('kontenjan', {}).get(yil, '-')) if isinstance(item.get('kontenjan'), dict) else '-'

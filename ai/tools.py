@@ -12,6 +12,7 @@ import aiohttp
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 from utils.link_fetcher import fetch_url_content
+from program_name import format_program_adi
 
 # Retriever servis URL'i — Docker compose'da ai-retriever:8000
 _RETRIEVER_URL = os.getenv("RETRIEVER_URL", "http://ai-retriever:8000")
@@ -99,8 +100,9 @@ def generate_markdown_table_python(data_list):
             uni_clean = uni_raw.replace("ÜNİVERSİTESİ", "Ü.").replace("YÜKSEK TEKNOLOJİ ENSTİTÜSÜ", "İYTE").replace("TEKNİK Ü.", "TÜ.")
             uni = f"**{uni_clean[:25]}**" # Çok uzunsa kes
 
-            bol = str(item.get('program_adi', '-')).replace("Mühendisliği", "Müh.").replace("Öğretmenliği", "Öğr.")
-            bol = f"{bol[:22]}.." if len(bol) > 22 else bol
+            # Program adını kısalt ama UOLP/ortak program, kampüs, İÖ gibi
+            # öğrenciyi yanıltacak kritik nitelemeleri KORU (bkz. program_name.py)
+            bol = format_program_adi(item.get('program_adi', '-'))
 
             yil = str(item.get('current_year', '-'))
             kont = str(item.get('kontenjan', {}).get(yil, '-')) if isinstance(item.get('kontenjan'), dict) else '-'
