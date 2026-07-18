@@ -1,4 +1,4 @@
-from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 
 from state import AgentState
 from models import llm_responder
@@ -29,12 +29,25 @@ async def casual_chat_node(state: AgentState) -> dict:
         mode_label = "CASUAL"
 
     messages = state.get("messages", [])
-    user_text = get_msg_content(messages[-1]) if messages else "Selam"
 
-    response = await llm_responder.ainvoke([
-        SystemMessage(content=prompt),
-        HumanMessage(content=user_text),
-    ])
+    # Session hafızası: checkpointer aynı thread'in tüm geçmişini state'e
+    # koyuyor — sadece son mesajı değil, son 10 turu LLM'e ver ki
+    # aynı sohbet içinde bağlam (isim, önceki sorular vb.) hatırlansın.
+    llm_messages: list = [SystemMessage(content=prompt)]
+    for m in messages[-10:]:
+        if isinstance(m, ToolMessage):
+            continue
+        content = get_msg_content(m)
+        if not content or not str(content).strip():
+            continue
+        if isinstance(m, AIMessage):
+            llm_messages.append(AIMessage(content=content))
+        else:
+            llm_messages.append(HumanMessage(content=content))
+    if len(llm_messages) == 1:
+        llm_messages.append(HumanMessage(content="Selam"))
+
+    response = await llm_responder.ainvoke(llm_messages)
     answer = get_msg_content(response)
 
     print(f"[{mode_label}] 🤖 LLM yanıtı üretildi: '{answer[:60]}...'")

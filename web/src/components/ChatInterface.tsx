@@ -41,19 +41,13 @@ export function ChatInterface() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  // Kalıcı session id — cache / rate-limit kullanıcı bazlı çalışsın.
+  // Sohbet bazlı session id — her sohbet kendi hafızasını taşır.
+  // "Yeni sohbet" yeni bir id üretir; backend (resolve_thread_id) yeni
+  // thread açar ve önceki konuşmanın bağlamı sıfırlanır.
+  // (Rate-limit API key'e, cevap cache'i soru+mod'a bağlı — session id'nin
+  // kalıcı olmasının onlara etkisi yok.)
   useEffect(() => {
-    let sid = "";
-    try {
-      sid = localStorage.getItem("ta_session") ?? "";
-    } catch {}
-    if (!sid) {
-      sid = "web-" + uid();
-      try {
-        localStorage.setItem("ta_session", sid);
-      } catch {}
-    }
-    sessionId.current = sid;
+    if (!sessionId.current) sessionId.current = "web-" + uid();
   }, []);
 
   const hasChat = messages.length > 0;
@@ -179,7 +173,15 @@ export function ChatInterface() {
         busy={busy}
         activeMode={activeMode}
         setActiveMode={setActiveMode}
-        onReset={hasChat ? () => setMessages([]) : undefined}
+        onReset={
+          hasChat
+            ? () => {
+                setMessages([]);
+                // Yeni sohbet = yeni session = backend'de taze hafıza.
+                sessionId.current = "web-" + uid();
+              }
+            : undefined
+        }
       />
     </div>
   );
