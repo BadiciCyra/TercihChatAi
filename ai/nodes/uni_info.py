@@ -9,7 +9,7 @@ from utils.validators import get_msg_content, strip_react_thoughts
 from utils.decorators import validate_node_input, validate_node_output, with_error_recovery
 from utils.extractors import _extract_uni_from_text, _extract_uni_llm_fallback
 from utils.query_planner import query_planner
-from utils.context_assembly import build_grouped_context
+from utils.context_assembly import build_grouped_context, build_sources_block
 from utils.link_fetcher import fetch_url_content
 from nodes.fast_lookup import _ddg_multi_query
 
@@ -229,7 +229,16 @@ async def uni_info_node(state: AgentState) -> dict:
         answer = strip_react_thoughts(answer)
         if answer and len(answer.strip()) > 100:
             print(f"[UNI_INFO] ✅ LLM synthesis tamamlandı ({len(answer)} karakter)")
-            # Genel sorgular için cache'e yaz
+            # Kaynakları LLM'e bırakma — gerçek URL'lerden deterministik ekle.
+            if "](http" not in answer:
+                sources = build_sources_block(
+                    raw_buckets,
+                    exclude_url_substrings=_SKIP_FETCH_DOMAINS,
+                    priority_urls=urls_to_fetch,
+                )
+                if sources:
+                    answer = answer.rstrip() + "\n\n" + sources
+            # Genel sorgular için cache'e yaz (kaynaklar dahil)
             if cache_key:
                 _save_uni_info_cache(cache_key, answer)
             return {"messages": [AIMessage(content=answer)]}

@@ -15,7 +15,7 @@ from utils.validators import get_msg_content, strip_react_thoughts
 from utils.decorators import validate_node_input, validate_node_output, with_error_recovery
 from utils.extractors import _extract_program_from_text, _extract_program_llm_fallback
 from utils.query_planner import query_planner
-from utils.context_assembly import build_grouped_context
+from utils.context_assembly import build_grouped_context, build_sources_block
 from utils.link_fetcher import fetch_url_content
 from nodes.fast_lookup import _ddg_quick
 
@@ -275,6 +275,16 @@ async def career_info_node(state: AgentState) -> dict:
         answer = strip_react_thoughts(answer)
         if answer and len(answer.strip()) > 100:
             print(f"[CAREER_INFO] ✅ LLM synthesis tamamlandı ({len(answer)} karakter)")
+            # Kaynakları LLM'e bırakma — gerçek URL'lerden deterministik ekle.
+            # LLM zaten markdown link koyduysa (](http) tekrar ekleme.
+            if "](http" not in answer:
+                sources = build_sources_block(
+                    raw_buckets,
+                    exclude_url_substrings=SOCIAL_MEDIA_DOMAINS,
+                    priority_urls=urls_to_fetch,
+                )
+                if sources:
+                    answer = answer.rstrip() + "\n\n" + sources
             return {"messages": [AIMessage(content=answer)], "is_career_specific": is_career_specific}
         print("[CAREER_INFO] ⚠️ LLM çok kısa yanıt verdi, fallback'e geçiliyor")
     except Exception as e:

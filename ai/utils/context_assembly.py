@@ -55,6 +55,56 @@ def build_grouped_context(
     return ContextAssemblyResult(context_blocks=context_blocks, fallback_parts=fallback_parts, seen_urls=seen_urls)
 
 
+def build_sources_block(
+    grouped_results: Sequence[Sequence[Mapping[str, Any]]],
+    *,
+    max_sources: int = 6,
+    heading: str = "### 📚 Kaynaklar",
+    exclude_url_substrings: Sequence[str] = (),
+    priority_urls: Sequence[str] = (),
+) -> str | None:
+    """Toplanan arama sonuçlarından deterministik bir kaynak listesi üretir.
+
+    LLM'in URL'leri sadık biçimde tekrarlamasına güvenmek yerine, gerçek
+    kaynakları `- [başlık](url)` olarak listeler. `priority_urls` (örn. tam
+    içeriği çekilen linkler) önce sıralanır.
+    """
+    priority_set = {u for u in priority_urls if u}
+    seen: set[str] = set()
+    picked: list[tuple[str, str]] = []
+
+    flat: list[Mapping[str, Any]] = []
+    for bucket in grouped_results:
+        for item in (bucket or []):
+            flat.append(item)
+
+    def _add(item: Mapping[str, Any]) -> None:
+        url = (item.get("url") or "").strip()
+        if not url or url in seen:
+            return
+        if any(skip in url.lower() for skip in exclude_url_substrings):
+            return
+        seen.add(url)
+        title = (item.get("title") or "Kaynak").strip() or "Kaynak"
+        if len(title) > 80:
+            title = title[:77] + "…"
+        picked.append((title, url))
+
+    # Önce öncelikli (tam içeriği çekilen) URL'ler, sonra kalanlar
+    for item in flat:
+        if (item.get("url") or "").strip() in priority_set:
+            _add(item)
+    for item in flat:
+        _add(item)
+
+    if not picked:
+        return None
+
+    lines = [heading]
+    lines.extend(f"- [{title}]({url})" for title, url in picked[:max_sources])
+    return "\n".join(lines)
+
+
 def build_link_supplement(
     all_links: Sequence[Mapping[str, Any]],
     *,
