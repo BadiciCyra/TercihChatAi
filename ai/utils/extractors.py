@@ -228,6 +228,23 @@ def _extract_program_from_text(text: str) -> Optional[str]:
         if kw in t:
             return full
 
+    # ÖNCELİK 1.5: Öğrenci jargonu kısaltmaları — kelime sınırıyla eşleşir.
+    # Substring kullanılamaz: "ceng" substring'i "Cengiz"i de yakalardı.
+    # Ekler tolere edilir ("cengler", "cenge"), isimler dışlanır (cengiz, cengaver).
+    slang_patterns = [
+        (r'\bceng(?!iz|aver)\w*', 'Bilgisayar Mühendisliği'),   # "ceng", "cengler"
+        (r'\bcs\b', 'Bilgisayar Mühendisliği'),
+        (r'\beee\b', 'Elektrik-Elektronik Mühendisliği'),
+        (r'\bmbg\b', 'Moleküler Biyoloji ve Genetik'),
+        (r'\bie\b', 'Endüstri Mühendisliği'),
+        (r'\bmakina\b', 'Makine Mühendisliği'),
+        (r'\bpsiko\b', 'Psikoloji'),
+        (r'\bbilg\.?\s*müh\w*', 'Bilgisayar Mühendisliği'),      # "bilg müh", "bilg. müh"
+    ]
+    for pattern, full in slang_patterns:
+        if re.search(pattern, t):
+            return full
+
     # ÖNCELİK 2: Tekli kelimeler (en son fallback)
     single_aliases = [
         ('bilgisayar', 'Bilgisayar Mühendisliği'),
