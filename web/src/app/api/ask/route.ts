@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 
+// Vercel: fonksiyon süre limiti — agentic RAG akışı uzun sürebilir.
+// (Northflank/self-host ortamlarında etkisi yoktur.)
+export const maxDuration = 60;
+
 // Gateway ayarları — yalnızca sunucu tarafında okunur (X-School-Key sızmaz).
 const GATEWAY_URL =
   process.env.AI_GATEWAY_URL ??
