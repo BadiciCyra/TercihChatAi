@@ -203,39 +203,54 @@ def fix_uni_metadata(item):
 
     return final_tur, final_ucret
 
+def _pick_best_year_rank(tbs_dict):
+    """tbs sözlüğünden en güncel (en büyük) yılın geçerli sıralamasını seçer.
+
+    YÖK Atlas veriyi her sene yeni yıla taşıyor (2025 → 2026 → ...). Yılı sabit
+    yazmak yerine kayıttaki en yeni yılı dinamik seçiyoruz ki her sezon otomatik
+    çalışsın. Geçerli sıralama bulunamazsa (None, None) döner.
+    """
+    invalid = {"---", "Dolmadı", "...", "None", "0", ""}
+    # Yıl anahtarlarını sayısal olarak büyükten küçüğe sırala
+    def _year_key(k):
+        try:
+            return int(k)
+        except Exception:
+            return -1
+    for year in sorted(tbs_dict.keys(), key=_year_key, reverse=True):
+        val = tbs_dict.get(year)
+        if val is None or str(val).strip() in invalid:
+            continue
+        try:
+            r = int(float(str(val).replace(".", "").replace(",", "")))
+            return str(year), r
+        except Exception:
+            continue
+    return None, None
+
+
 def clean_and_prioritize_years(data_list):
     """
-    Ham veriyi temizler, en güncel yılı (2025/2024) seçer ve metadata düzeltmelerini uygular.
+    Ham veriyi temizler, en güncel yılı (2026/2025/...) dinamik seçer ve
+    metadata düzeltmelerini uygular.
     """
     print(f"[CLEANER] 🧹 {len(data_list)} adet ham veri işleniyor...")
     clean_list = []
-    # Sadece 2025 verilerini kullan
-    target_years = ['2025']
     seen_programs = set() # Tekrar eden programları engellemek için
 
     for item in data_list:
         prog_code = item.get('yop_kodu', '')
         # Aynı YOP kodu geldiyse atla (Duplicate koruması)
-        if prog_code and prog_code in seen_programs: 
+        if prog_code and prog_code in seen_programs:
             continue
         seen_programs.add(prog_code)
 
-        best_year = None
-        best_rank = 9999999 
         tbs_dict = item.get('tbs', {}) or {}
-        
-        # Sadece 2025 için kontrol et; 2025 yoksa öğeyi atla (kullanıcının istediği koşul)
-        val = tbs_dict.get('2025')
-        if val and str(val) not in ["---", "Dolmadı", "...", "None", "0"]:
-            try:
-                r = int(float(str(val).replace(".", "").replace(",", "")))
-                best_year = '2025'
-                best_rank = r
-            except:
-                # Eğer parse edilemezse atla bu öğeyi
-                continue
-        else:
-            # 2025 verisi yok -> bu öğeyi dahil etmiyoruz
+
+        # Kayıttaki en güncel yılı dinamik seç (2025/2026/... fark etmez).
+        # Geçerli sıralama yoksa öğeyi atla.
+        best_year, best_rank = _pick_best_year_rank(tbs_dict)
+        if best_year is None:
             continue
 
         # Veriyi güncelle
@@ -671,14 +686,10 @@ async def search_yok_atlas(entities):
         # Hedef sıralamaya en yakınları seç (eğer target_rank verildiyse)
         if all_results and target_rank:
             def _rank_diff(item):
-                try:
-                    val = (item.get('tbs') or {}).get('2025')
-                    if not val or str(val) in ["---", "Dolmadı", "...", "None", "0"]:
-                        return 9999999
-                    r = int(float(str(val).replace(".", "").replace(",", "")))
-                    return abs(r - target_rank)
-                except Exception:
+                _, r = _pick_best_year_rank(item.get('tbs') or {})
+                if r is None:
                     return 9999999
+                return abs(r - target_rank)
             all_results.sort(key=_rank_diff)
             # En yakın 30'u tut, gerisi gürültü
             all_results = all_results[:30]

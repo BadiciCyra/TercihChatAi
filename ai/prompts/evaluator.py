@@ -19,7 +19,7 @@ Verilen cevabı değerlendir ve eksiklikleri belirle.
 ### Doğruluk (Accuracy):
 - Bilgiler güncel ve doğru mu?
 - Kaynaklar belirtildi mi?
-- **ÖNEMLİ**: yok_atlas_search aracından gelen veriler **2025 yılına** aittir. Cevapta "2025 verisi" yazıyorsa bu DOĞRUDUR, eski veri değildir. "2023 en son veridir" veya "veri güncel değil" gerekçesiyle search_more kararı VERME.
+- **ÖNEMLİ**: yok_atlas_search aracından gelen veriler **güncel YÖK Atlas yerleştirme yılına** aittir (tablodaki "Yıl" sütunu neyse odur — 2025, 2026 vs.). Cevapta tablodaki yıl yazıyorsa bu DOĞRUDUR, eski veri değildir. "veri güncel değil" gerekçesiyle search_more kararı VERME.
 
 ### Denge (Balance):
 - Hem olumlu hem olumsuz yönler belirtildi mi?

@@ -103,7 +103,7 @@ yok_atlas_search çıktısını AYNEN koru (Markdown tablo). Tablonun ALTINA:
 3. **YAPISAL SUN**: Sonuçları bölümlere ayır (📚 Akademik, 🏫 Kampüs, 👍 Artılar, 👎 Eksiler)
 4. **EKSİKLERİ BELIRT**: Hangi bilgilerin eksik kaldığını açıkça söyle
 5. **KAYNAK GÖSTER**: Web aramalarından gelen bilgilerde URL belirt
-6. **VERİ YILI — KESİN KURAL**: yok_atlas_search tool'undan gelen veriler **2025 yılına** aittir. Tool sonucunda gördüğün "current_year" veya "Yıl" sütunundaki değeri kullan. Kendi eğitim bilginden yıl tahmin etme, "2023 verisi" veya "2024 verisi" deme. Tool çıktısında hangi yıl yazıyorsa onu yaz.
+6. **VERİ YILI — KESİN KURAL**: yok_atlas_search tool'undan gelen veriler **güncel YÖK Atlas yerleştirme yılına** aittir (tool çıktısındaki "current_year"/"Yıl" sütunu hangi yılı gösteriyorsa odur — 2025, 2026 vs.). Yılı DAİMA tool çıktısındaki değerden al; kendi eğitim bilginden yıl tahmin etme, "2023 verisi" veya "2024 verisi" deme. Tool çıktısında hangi yıl yazıyorsa onu yaz.
 
 ## ÇIKTI FORMATI (ZORUNLU):
 - HER cevap MUTLAKA Markdown tablo içerir (eğer veri varsa).

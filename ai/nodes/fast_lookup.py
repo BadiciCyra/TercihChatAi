@@ -465,7 +465,7 @@ async def fast_lookup_node(state: AgentState) -> dict:
             f"{intro} için seçenekler:\n\n"
             f"{tool_result}\n\n"
             f"### 💡 Tavsiye\n"
-            f"Tablodaki sonuçlar 2025 YÖK Atlas verilerine göre derlenmiştir. "
+            f"Tablodaki sonuçlar güncel YÖK Atlas verilerine göre derlenmiştir (yıl için tablodaki 'Yıl' sütununa bakınız). "
             f"'🎯 Hedef' etiketli programlar senin sıralamana en yakındır; "
             f"'✅ Garanti' olanlar daha rahat tutar; '⛰️ Çok Zorla' olanlar ise hedeften iyi gerektirir.\n\n"
         )
