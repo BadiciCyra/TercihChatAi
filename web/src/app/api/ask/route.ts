@@ -49,6 +49,11 @@ export async function POST(request: Request) {
   const payload: Record<string, unknown> = { query, session_id: sessionId };
   if (mode) payload.mode = mode;
 
+  // Forum'un ürettiği imzalı kullanıcı token'ı — günlük kota bunun üzerinden
+  // uygulanır. Yoksa istek eskisi gibi (kotasız) geçer; zorunluluk gateway
+  // tarafında REQUIRE_USER_TOKEN ile açılır.
+  const userToken = request.headers.get("X-User-Token") ?? "";
+
   // Gateway agentic RAG akışı uzun sürebilir — geniş timeout.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -59,6 +64,7 @@ export async function POST(request: Request) {
       headers: {
         "Content-Type": "application/json",
         "X-School-Key": SCHOOL_KEY,
+        ...(userToken ? { "X-User-Token": userToken } : {}),
       },
       body: JSON.stringify(payload),
       signal: controller.signal,

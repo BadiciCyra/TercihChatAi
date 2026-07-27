@@ -25,3 +25,4 @@ lxml_html_clean
 ddgs
 sentence-transformers
 rich
+PyJWT

@@ -142,3 +142,7 @@ class AgentState(TypedDict):
     # YENİ — sorgu spesifiklik bayrakları (Requirements: 1.1, 1.3, 1.5)
     is_specific: Optional[bool]          # Set by uni_info_node
     is_career_specific: Optional[bool]   # Set by career_info_node
+    # Oturum kimliği (= LangGraph thread_id). gate.py tarafından bir kez set
+    # edilir; node'lar SADECE OKUR. "Son arama" hafızasının kullanıcıya özel
+    # tutulması için gerekli — paylaşılan kova oturumlar arası sızıntı yapıyordu.
+    session_id: Optional[str]

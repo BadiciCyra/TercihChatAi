@@ -25,6 +25,9 @@ function uid() {
   }
 }
 
+// Forum'dan gelen imzalı kullanıcı token'ının saklandığı anahtar.
+const TOKEN_STORAGE_KEY = "tn_ai_user_token";
+
 const STAR = (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
     <path d="M12 2 9.9 8.6 3 9.2l5.2 4.4L6.6 21 12 17.3 17.4 21l-1.6-7.4L21 9.2l-6.9-.6L12 2Z" />
@@ -38,6 +41,7 @@ export function ChatInterface() {
   const [busy, setBusy] = useState(false);
 
   const sessionId = useRef<string>("");
+  const userToken = useRef<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -48,6 +52,30 @@ export function ChatInterface() {
   // kalıcı olmasının onlara etkisi yok.)
   useEffect(() => {
     if (!sessionId.current) sessionId.current = "web-" + uid();
+  }, []);
+
+  // Forum kullanıcı token'ı — günlük soru kotası buna göre işler.
+  // Forum, asistana yönlendirirken token'ı adres çubuğunun # kısmında taşır
+  // (/#t=<jwt>). Fragment sunucuya gönderilmez; sunucu log'larına ve
+  // referrer'a sızmaması için query string yerine bunu kullanıyoruz.
+  // Okuduktan sonra adres çubuğundan temizlenir, localStorage'da saklanır.
+  useEffect(() => {
+    try {
+      const m = window.location.hash.match(/[#&]t=([^&]+)/);
+      if (m) {
+        userToken.current = decodeURIComponent(m[1]);
+        localStorage.setItem(TOKEN_STORAGE_KEY, userToken.current);
+        window.history.replaceState(
+          null,
+          "",
+          window.location.pathname + window.location.search,
+        );
+      } else {
+        userToken.current = localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+      }
+    } catch {
+      // localStorage kapalıysa sessizce token'sız devam et.
+    }
   }, []);
 
   const hasChat = messages.length > 0;
@@ -89,7 +117,12 @@ export function ChatInterface() {
       try {
         const resp = await fetch("/api/ask", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(userToken.current
+              ? { "X-User-Token": userToken.current }
+              : {}),
+          },
           body: JSON.stringify({
             query,
             session_id: sessionId.current,

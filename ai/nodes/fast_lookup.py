@@ -256,8 +256,22 @@ async def _fast_web_supplement(ner_ctx: dict) -> Optional[str]:
 @validate_node_input
 @validate_node_output
 @with_error_recovery
-async def fast_lookup_node(state: AgentState) -> dict:
+async def fast_lookup_node(state: AgentState, config: dict | None = None) -> dict:
     """Async hızlı yol: tek YÖK Atlas çağrısı + minimal LLM formatla. ~5-10sn."""
+    # "Son arama" hafızası OTURUMA ÖZEL olmalı. Eskiden burada sabit
+    # "default_session" kullanılıyordu; bu tüm kullanıcıları tek kovaya
+    # topluyor ve takip sorularında başka kullanıcının bölümü/sıralaması
+    # dönebiliyordu.
+    # Kimlik state üzerinden gelir (gate.py inputs["session_id"]); LangGraph
+    # config'i decorator sarmalayıcıları yüzünden node'a ulaşmıyor, o yüzden
+    # config yalnızca yedek yol olarak kontrol edilir.
+    session_key = str(state.get("session_id") or "")
+    if not session_key:
+        try:
+            session_key = ((config or {}).get("configurable") or {}).get("thread_id") or ""
+        except Exception:
+            session_key = ""
+
     ner_ctx = dict(state.get("ner_context") or {})
     messages = state.get("messages", [])
     user_text = get_msg_content(messages[-1]) if messages else ""
@@ -341,7 +355,7 @@ async def fast_lookup_node(state: AgentState) -> dict:
     print(f"[FAST_LOOKUP] 🔍 has_any_entity={has_any_entity}, is_followup={is_followup}, messages_len={len(messages)}")
 
     if is_followup:
-        redis_ents = _load_last_entities("default_session")
+        redis_ents = _load_last_entities(session_key)
         state_ents = _scan_history_for_entities(messages)
         merged = {**state_ents, **redis_ents}
         if merged:
@@ -367,7 +381,7 @@ async def fast_lookup_node(state: AgentState) -> dict:
 
         still_missing = not any(ner_ctx.get(k) for k in ("rank", "program", "uni", "city"))
         if still_missing:
-            redis_ents = _load_last_entities("default_session")
+            redis_ents = _load_last_entities(session_key)
             if redis_ents:
                 print(f"[FAST_LOOKUP] 🗄️ Redis last_ents kullanılıyor: {redis_ents}")
                 for k, v in redis_ents.items():
@@ -425,7 +439,7 @@ async def fast_lookup_node(state: AgentState) -> dict:
         )
         return {"messages": [AIMessage(content=msg)]}
 
-    _save_last_entities("default_session", ner_ctx)
+    _save_last_entities(session_key, ner_ctx)
 
     program_label = ner_ctx.get("program") or "Sonuçlar"
     rank_label = ner_ctx.get("rank")

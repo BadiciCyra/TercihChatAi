@@ -101,6 +101,103 @@ from app.answer_cache import (  # noqa: F401
     cache_get,
     cache_set,
 )
+from utils.extractors import (  # noqa: F401
+    _is_followup_question,
+    _extract_rank_from_text,
+    _extract_program_from_text,
+    _extract_uni_from_text,
+    _extract_city_from_text,
+    _extract_score_type_from_text,
+)
+from utils.redis_cache import _save_last_entities  # noqa: F401
+
+
+def _lacks_standalone_entity(query: str) -> bool:
+    """Soru kendi başına ayakta durabiliyor mu?
+
+    Sıralama / bölüm / üniversite / şehirden hiçbiri yoksa cevabın anlamı
+    önceki mesajlara bağlıdır — bu tür cevaplar (mod + metin) ile anahtarlanan
+    ortak cevap cache'ine YAZILMAMALI, oradan OKUNMAMALIDIR; aksi halde aynı
+    cümleyi kuran başka bir kullanıcının listesi dönebilir.
+    """
+    if not query:
+        return True
+    try:
+        for extract in (
+            _extract_rank_from_text,
+            _extract_program_from_text,
+            _extract_city_from_text,
+        ):
+            if extract(query):
+                return False
+
+        # Üniversite çıkarıcısı "yalnızca devlet üniversitelerini listele"
+        # cümlesinden "yalnızca devlet Üniversitesi" gibi sahte isimler
+        # üretebiliyor. Sadece jenerik kelimelerden oluşan eşleşmeleri sayma.
+        uni = _extract_uni_from_text(query)
+        if uni and not _is_generic_uni_match(uni):
+            return False
+    except Exception:
+        # Çıkarıcılar patlarsa güvenli tarafta kal: cache'i atla.
+        return True
+    return True
+
+
+# Tek başına üniversite ADI olamayacak jenerik kelimeler
+_GENERIC_UNI_WORDS = frozenset({
+    "universitesi", "universite", "universiteleri", "universitelerini",
+    "yalnizca", "sadece", "sirf", "devlet", "vakif", "ozel", "tum",
+    "butun", "hepsi", "diger", "digerleri", "bunlar", "sunlar",
+})
+
+
+def _is_generic_uni_match(uni: str) -> bool:
+    """Çıkarılan 'üniversite adı' aslında jenerik bir ifade mi?"""
+    norm = uni.lower().translate(str.maketrans("çğıöşüâî", "cgiosuai"))
+    words = [w for w in norm.split() if w]
+    if not words:
+        return True
+    return all(w in _GENERIC_UNI_WORDS for w in words)
+
+
+def _remember_query_entities(session_id: str, query: str) -> None:
+    """Sorudaki varlıkları bu oturumun 'son arama' hafızasına yaz.
+
+    Normalde fast_lookup_node yapar; ancak cevap cache'ten dönerse graph hiç
+    çalışmaz. O durumda da takip sorularının bağlamı kaybolmasın diye burada
+    kaydediyoruz.
+    """
+    if not session_id or not query:
+        return
+    try:
+        ents = {}
+        rank = _extract_rank_from_text(query)
+        if rank:
+            ents["rank"] = rank
+        program = _extract_program_from_text(query)
+        if program:
+            ents["program"] = program
+        city = _extract_city_from_text(query)
+        if city:
+            ents["city"] = city
+        uni = _extract_uni_from_text(query)
+        if uni and not _is_generic_uni_match(uni):
+            ents["uni"] = uni
+        score = _extract_score_type_from_text(query)
+        if score:
+            ents["score_type"] = score
+        if ents:
+            _save_last_entities(session_id, ents)
+    except Exception as e:  # hafıza yazımı isteği bozmamalı
+        logger.warning(f"[ENT_CACHE] Cache-hit entity kaydı atlandı: {e}")
+
+
+from app.user_quota import (  # noqa: F401
+    DAILY_LIMIT,
+    enforce_daily_quota,
+    get_quota_status,
+    verify_user_token,
+)
 from app.auth import (  # noqa: F401
     API_KEY_NAME,
     api_key_header,
@@ -200,7 +297,8 @@ class AskRequest(BaseModel):
 @app.post("/b2b/ask_intelligent")
 async def ask_intelligent_system(
     request: Request,
-    client_info: dict = Depends(get_current_dershane)
+    client_info: dict = Depends(get_current_dershane),
+    user_quota: dict | None = Depends(enforce_daily_quota),
 ):
     from fastapi import HTTPException, status
     # İstek gövdesini esnekçe işle (string, dict, nested)
@@ -261,11 +359,28 @@ async def ask_intelligent_system(
     logger.info(f"📨 [İSTEK] Kurum: {school_name} | Soru: {req.query}")
     request.state.cache_hit = False
 
+    # Takip sorularının anlamı SOHBETE bağlıdır ("sadece devletler kalsın",
+    # "peki İstanbul'dakiler?"). Cevap cache'i ise sadece (mod + soru metni)
+    # ile anahtarlanıyor — yani aynı cümleyi kuran iki farklı kullanıcı aynı
+    # cevabı alırdı ve biri diğerinin listesini görürdü. Bu tür sorularda
+    # cache'i tamamen atlıyoruz.
+    # Not: kalıp tabanlı takip tespiti tek başına yetmiyor ("yalnızca devlet
+    # üniversitelerini listele lütfen" kalıba uymuyor). İkinci ve daha sağlam
+    # ölçüt: soruda kendi başına anlam taşıyan hiçbir varlık (sıralama, bölüm,
+    # üniversite, şehir) yoksa cevap zorunlu olarak sohbet bağlamına dayanır.
+    is_context_dependent = _is_followup_question(req.query) or _lacks_standalone_entity(req.query)
+    if is_context_dependent:
+        logger.info("[CACHE] ⏭️ Bağlama bağlı soru — cevap cache'i atlanıyor")
+
     # ⚡ CACHE CHECK: Aynı/benzer soru cache'te varsa LLM çağrısı yapma
     # _cache_key(mode, query) None dönerse (guidance) cache tamamen atlanır
-    cached_answer = cache_get(req.query, mode=req.mode)
+    cached_answer = None if is_context_dependent else cache_get(req.query, mode=req.mode)
     if cached_answer:
         request.state.cache_hit = True
+        # Cache hit'te graph çalışmaz, dolayısıyla "son arama" hafızası da
+        # yazılmazdı; sonraki takip sorusu ("sadece devletler kalsın") bağlamsız
+        # kalırdı. Bu yüzden entity'leri burada da oturuma kaydediyoruz.
+        _remember_query_entities(resolve_thread_id(req.session_id).thread_id, req.query)
         return {
             "answer": cached_answer,
             "school": school_name,
@@ -300,6 +415,11 @@ async def ask_intelligent_system(
         inputs = {
             "messages": [("user", req.query)],
             "mode": req.mode,            # mod seçimi — AgentState'e taşınır
+            # Oturum kimliği state üzerinden taşınır. LangGraph config'i
+            # node'lara ulaşmıyor (node'lar validate/recovery decorator'ları ile
+            # sarmalı), bu yüzden "son arama" hafızasını oturuma bağlamak için
+            # thread_id'yi doğrudan state'e koyuyoruz.
+            "session_id": thread_resolution.thread_id,
             "ner_context": {},           # NER node tarafından doldurulacak
             "iteration_count": 0,        # Sonsuz döngü koruması için
             # Deep Search alanları
@@ -414,7 +534,9 @@ async def ask_intelligent_system(
         # 💾 CACHE SET: Bir daha aynı soru gelirse LLM çağırma.
         # cache_set zaten "bulunamadı/hata" içeren cevapları reddediyor.
         # _cache_key(mode, query) None dönerse (guidance) cache yazımı atlanır.
-        if final_answer and len(final_answer) > 300:
+        # Takip sorularının cevabı cache'e YAZILMAZ — bkz. yukarıdaki
+        # is_context_dependent açıklaması (oturumlar arası sızıntı).
+        if final_answer and len(final_answer) > 300 and not is_context_dependent:
             cache_set(req.query, final_answer, mode=req.mode)
 
         return {

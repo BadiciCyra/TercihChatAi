@@ -47,18 +47,22 @@ def _validate_output_result(func_name: str, result: dict) -> dict:
 
 
 def validate_node_input(func):
-    """Node girişini doğrulayan decorator — async/sync dual."""
+    """Node girişini doğrulayan decorator — async/sync dual.
+
+    LangGraph node'a `state` dışında `config` da geçebilir (thread_id vb.);
+    ek argümanlar olduğu gibi iletilir.
+    """
     if _asyncio_for_decorators.iscoroutinefunction(func):
         @wraps(func)
-        async def async_wrapper(state: AgentState) -> dict:
+        async def async_wrapper(state: AgentState, *args, **kwargs) -> dict:
             _validate_input_state(func.__name__, state)
-            return await func(state)
+            return await func(state, *args, **kwargs)
         return async_wrapper
 
     @wraps(func)
-    def sync_wrapper(state: AgentState) -> dict:
+    def sync_wrapper(state: AgentState, *args, **kwargs) -> dict:
         _validate_input_state(func.__name__, state)
-        return func(state)
+        return func(state, *args, **kwargs)
     return sync_wrapper
 
 
@@ -66,14 +70,14 @@ def validate_node_output(func):
     """Node çıkışını doğrulayan decorator — async/sync dual."""
     if _asyncio_for_decorators.iscoroutinefunction(func):
         @wraps(func)
-        async def async_wrapper(state: AgentState) -> dict:
-            result = await func(state)
+        async def async_wrapper(state: AgentState, *args, **kwargs) -> dict:
+            result = await func(state, *args, **kwargs)
             return _validate_output_result(func.__name__, result)
         return async_wrapper
 
     @wraps(func)
-    def sync_wrapper(state: AgentState) -> dict:
-        result = func(state)
+    def sync_wrapper(state: AgentState, *args, **kwargs) -> dict:
+        result = func(state, *args, **kwargs)
         return _validate_output_result(func.__name__, result)
     return sync_wrapper
 
@@ -82,9 +86,9 @@ def with_error_recovery(func):
     """Hata durumunda recovery sağlayan decorator — async/sync dual."""
     if _asyncio_for_decorators.iscoroutinefunction(func):
         @wraps(func)
-        async def async_wrapper(state: AgentState) -> dict:
+        async def async_wrapper(state: AgentState, *args, **kwargs) -> dict:
             try:
-                return await func(state)
+                return await func(state, *args, **kwargs)
             except Exception as e:
                 print(f"[RECOVERY] 💥 {func.__name__} hatası: {e}")
                 _tb_for_decorators.print_exc()
@@ -95,9 +99,9 @@ def with_error_recovery(func):
         return async_wrapper
 
     @wraps(func)
-    def sync_wrapper(state: AgentState) -> dict:
+    def sync_wrapper(state: AgentState, *args, **kwargs) -> dict:
         try:
-            return func(state)
+            return func(state, *args, **kwargs)
         except Exception as e:
             print(f"[RECOVERY] 💥 {func.__name__} hatası: {e}")
             _tb_for_decorators.print_exc()

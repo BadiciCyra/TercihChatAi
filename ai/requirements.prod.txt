@@ -31,3 +31,4 @@ ddgs==9.14.4
 sentence-transformers==5.6.0
 rich==15.0.0
 httpx==0.28.1
+PyJWT==2.10.1
