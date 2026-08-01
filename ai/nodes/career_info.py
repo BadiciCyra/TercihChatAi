@@ -27,6 +27,7 @@ from utils.research_topics import (
     CAREER_TOPICS,
     TOPIC_BY_KEY,
     build_career_topic_queries,
+    build_job_search_links,
     score_url_for_topic,
 )
 from nodes.fast_lookup import _ddg_quick
@@ -43,20 +44,30 @@ SOCIAL_MEDIA_DOMAINS = [
 _CAREER_SKIP_FETCH_DOMAINS = [
     "instagram.com", "facebook.com", "twitter.com", "tiktok.com", "pinterest.com",
     "youtube.com", "yandex.com", "google.com",
+    # Bot koruması olanlar: çekmeye çalışmak boşuna istek + hata logu üretiyor
+    "linkedin.com", "kariyer.net",
 ]
 
 # Career için öncelikli fetch domainleri (maaş, iş ilanı, YÖK, kariyer platformları)
+# NOT: kariyer.net ve linkedin.com ÇIKARILDI — ikisi de botlara kapalı
+# (kariyer.net 403, linkedin robots.txt "Disallow: /"). Her denemede boşuna
+# istek gidiyordu. Bu siteler artık yalnızca ARAMA LİNKİ olarak sunuluyor
+# (bkz. build_job_search_links).
 _CAREER_PRIORITY_FETCH_DOMAINS = [
-    "kariyer.net", "linkedin.com", "yok.gov.tr", "istatistik.yok.gov.tr",
+    "yok.gov.tr", "istatistik.yok.gov.tr",
     "glassdoor.com", "secretcv.com", "yenibiris.com", "eksikatalogu.com",
     "eksisozluk.com", "itü.edu.tr", "odtu.edu.tr", "boun.edu.tr",
-    "meslekbilgisi.com", "meslekyonetimi.com",
+    "meslekbilgisi.com", "meslekyonetimi.com", "indeed.com", "eleman.net",
 ]
+
+# Kazınmaya çalışılmayacak siteler (bot koruması var) — sadece link verilir
 
 
 # ── Tarama derinliği (env ile ayarlanabilir) ────────────────────────────────
 # Sayfalar paralel çekildiği için sayı artırmak süreyi doğrusal artırmaz.
-_CAREER_MAX_FETCH = int(_os_for_career.getenv("CAREER_MAX_FETCH_URLS", "8"))
+# Konu kotaları toplamı 10; tavan bunun altındaysa alttaki konular (ilanlar,
+# gelecek) hiç sayfa alamıyor. Sayfalar paralel çekildiği için 10 ≈ 8 kadar sürer.
+_CAREER_MAX_FETCH = int(_os_for_career.getenv("CAREER_MAX_FETCH_URLS", "10"))
 _CAREER_MAX_FETCH_SPECIFIC = int(_os_for_career.getenv("CAREER_MAX_FETCH_URLS_SPECIFIC", "10"))
 _CAREER_CHARS_PER_PAGE = int(_os_for_career.getenv("CAREER_MAX_CHARS_PER_PAGE", "2500"))
 
@@ -513,6 +524,15 @@ async def career_info_node(state: AgentState) -> dict:
             if docs:
                 answer = answer.rstrip() + "\n\n" + docs
                 print(f"[CAREER_INFO] 📎 {len(fetched_docs)} belge bağlantısı eklendi")
+
+            # Güncel iş ilanlarına hazır filtrelenmiş arama linkleri.
+            # İlan kazımak yerine link veriyoruz: ilanlar bayatlamaz, LinkedIn/
+            # kariyer.net bot koruması sorun olmaz, ek istek de gerekmez.
+            job_links = build_job_search_links(dept)
+            if job_links:
+                lines = "\n".join(f"- 🔗 [{ad} — {dept} ilanları]({url})" for ad, url in job_links)
+                answer = answer.rstrip() + "\n\n### 💼 Açık İlanlara Göz At\n" + lines
+                print(f"[CAREER_INFO] 💼 {len(job_links)} iş ilanı arama linki eklendi")
             # Kaynakları LLM'e bırakma — gerçek URL'lerden deterministik ekle.
             # LLM zaten markdown link koyduysa (](http) tekrar ekleme.
             if "](http" not in answer:

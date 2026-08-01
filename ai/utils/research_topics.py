@@ -107,6 +107,16 @@ CAREER_TOPICS: list[Topic] = [
         _KARIYER_KAYNAK, quota=2,
     ),
     Topic(
+        # Öğrenciye somut örnek veriyor ("şu an Aselsan/TEI ilan vermiş").
+        # Kota sırası önemli: liste sonunda kalırsa tavana takılıp hiç sayfa
+        # alamıyordu, o yüzden üst sıralarda.
+        "ilanlar", "Güncel İş İlanları",
+        ["{bolum} iş ilanları güncel açık pozisyonlar",
+         "{bolum} eleman aranıyor ilan"],
+        # kariyer.net 403, linkedin robots.txt kapalı → erişilebilenler:
+        ("yenibiris.com", "secretcv.com", "eleman.net", "indeed.com"), quota=1,
+    ),
+    Topic(
         "mufredat_c", "Müfredat / Dersler",
         ["{bolum} bölümü dersleri müfredat zor mu",
          "{bolum} ders içerikleri neler okutuluyor"],
@@ -131,6 +141,36 @@ CAREER_TOPICS: list[Topic] = [
         (), quota=1,
     ),
 ]
+
+
+def _ascii_slug(s: str, sep: str = "-") -> str:
+    """Türkçe adı URL slug'ına çevir: 'Endüstri Mühendisliği' → 'endustri-muhendisligi'."""
+    t = _norm_tr(s)
+    t = "".join(c if c.isalnum() or c.isspace() else " " for c in t)
+    return sep.join(w for w in t.split() if w)
+
+
+def build_job_search_links(bolum: str) -> list[tuple[str, str]]:
+    """Bölüme özel, HAZIR FİLTRELENMİŞ iş ilanı arama linkleri.
+
+    Neden kazımak yerine link: LinkedIn robots.txt genel botlara "Disallow: /"
+    diyor, kariyer.net 403 veriyor. Ayrıca kazınan bir ilan birkaç haftada
+    bayatlar — arama linki her zaman güncel kalır ve kullanıcı tek tıkla
+    o anki ilanları görür.
+    """
+    bolum = (bolum or "").strip()
+    if not bolum:
+        return []
+    from urllib.parse import quote_plus
+    q = quote_plus(bolum)
+    dash = _ascii_slug(bolum, "-")
+    plus = _ascii_slug(bolum, "+")
+    return [
+        ("LinkedIn", f"https://www.linkedin.com/jobs/search?keywords={q}&location=T%C3%BCrkiye"),
+        ("Kariyer.net", f"https://www.kariyer.net/is-ilanlari/{plus}"),
+        ("Yenibiriş", f"https://www.yenibiris.com/is-ilanlari/{dash}"),
+        ("Indeed", f"https://tr.indeed.com/jobs?q={q}"),
+    ]
 
 # Konu anahtarı → Topic (hızlı erişim) — her iki küme birden
 TOPIC_BY_KEY = {t.key: t for t in (TOPICS + CAREER_TOPICS)}
