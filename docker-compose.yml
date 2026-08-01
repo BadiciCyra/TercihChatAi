@@ -58,6 +58,9 @@ services:
       # Local geliştirme: test_key ve anonim erişime izin ver
       ALLOW_DEV_FALLBACK: "true"
       ALLOW_ANONYMOUS: "true"
+      # Dakika başına istek limiti (plan bazlı). Local'de test/ölçüm yaparken
+      # varsayılan 5 req/dak çabuk doluyor; .env'den yükseltilebilir.
+      RATE_LIMIT_FREE: ${RATE_LIMIT_FREE:-5}
       # Günlük kullanıcı kotası (bkz. USER_QUOTA.md).
       # REQUIRE_USER_TOKEN=false → token yoksa istek eskisi gibi geçer.
       AI_USER_TOKEN_SECRET: ${AI_USER_TOKEN_SECRET:-local-dev-secret}

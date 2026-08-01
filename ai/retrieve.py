@@ -364,11 +364,59 @@ def generate_markdown_table_from_results(data_list):
 
 # --- 4. DIŞ SERVİSLER (SEARCH & RERANK) ---
 
+# ── DDG sorgu cache'i ───────────────────────────────────────────────────────
+# Araştırma modu istek başına ~17 DDG sorgusu atıyor (planner + konu bazlı
+# tarama). Yoğunlukta DuckDuckGo rate-limit uyguluyor ve sorgular 10sn
+# timeout'a düşüyor — sonuç: boş başlıklar. Sorgu bazlı cache hem bu riski
+# düşürür hem tekrar eden bölüm/üniversite sorgularını anında döndürür.
+#
+# ÖNEMLİ: boş sonuçlar cache'lenmez. Aksi halde bir timeout, o sorguyu
+# saatlerce kalıcı olarak boş gösterirdi.
+_DDG_CACHE_TTL = int(os.getenv("DDG_CACHE_TTL", "43200"))  # 12 saat
+_DDG_CACHE_NS = os.getenv("DDG_CACHE_NS", "v1")
+
+
+def _ddg_cache_key(query: str, is_review: bool) -> str:
+    import hashlib
+    norm = " ".join((query or "").lower().split())
+    tag = "rev" if is_review else "web"
+    return f"ai:ddg:{_DDG_CACHE_NS}:{tag}:{hashlib.md5(norm.encode()).hexdigest()}"
+
+
+async def _ddg_cache_get(key: str):
+    if not redis_client:
+        return None
+    try:
+        val = await redis_client.get(key)
+        if val:
+            return json.loads(val)
+    except Exception as e:
+        print(f"[DDG_CACHE] ⚠️ Okuma hatası: {e}")
+    return None
+
+
+async def _ddg_cache_set(key: str, results: list) -> None:
+    # Boş sonucu ASLA cache'leme (timeout'u kalıcı hale getirir)
+    if not redis_client or not results:
+        return
+    try:
+        await redis_client.setex(key, _DDG_CACHE_TTL, json.dumps(results, ensure_ascii=False))
+    except Exception as e:
+        print(f"[DDG_CACHE] ⚠️ Yazma hatası: {e}")
+
+
 async def search_ddg(query, is_review_search=False):
-    """DuckDuckGo üzerinden Web veya Yorum araması yapar."""
+    """DuckDuckGo üzerinden Web veya Yorum araması yapar (Redis cache'li)."""
     prefix = "🗣️ [YORUM]" if is_review_search else "🌍 [WEB]"
+
+    cache_key = _ddg_cache_key(query, is_review_search)
+    cached = await _ddg_cache_get(cache_key)
+    if cached:
+        print(f"[DDG_CACHE] ⚡ HIT ({len(cached)} sonuç): '{query[:60]}'")
+        return cached
+
     print(f"[RETRIEVER] 🔍 DDG arama başlatılıyor: '{query}'")
-    
+
     def _search():
         try:
             if is_review_search:
@@ -407,6 +455,7 @@ async def search_ddg(query, is_review_search=False):
             loop.run_in_executor(None, _search),
             timeout=10.0
         )
+        await _ddg_cache_set(cache_key, result)
         return result
     except asyncio.TimeoutError:
         print(f"[RETRIEVER] ⏰ DDG arama TIMEOUT (10s): '{query}'")
@@ -497,7 +546,21 @@ async def search_yok_atlas(entities):
     
     # Puan türü normalizasyonu
     normalized_type = normalize_puan_turu(entities.get("TUR"))
-    # Eğer puan türü belirtilmemişse hepsini tara
+
+    # Puan türü belirtilmemişse: bölüm adından çöz (YÖK Atlas program listesi
+    # her bölümün puan türünü veriyor). Böylece 4 türü tek tek taramaya gerek
+    # kalmıyor — ölçümde bu tarama tek başına ~5 sn'ye mal oluyordu.
+    if not normalized_type and program_query:
+        try:
+            from yok_atlas_client import resolve_program
+            _gid, _ptur = resolve_program(program_query)
+            if _ptur:
+                normalized_type = _ptur.lower().replace("soz", "söz")
+                print(f"[RETRIEVER] 🎯 Puan türü bölümden çözüldü: {program_query} → {_ptur}")
+        except Exception as e:
+            print(f"[RETRIEVER] ⚠️ Puan türü çözümlenemedi: {e}")
+
+    # Hâlâ yoksa hepsini tara (son çare)
     scan_types = [normalized_type] if normalized_type else ["say", "ea", "söz", "dil"]
     print(f"[RETRIEVER] 🔍 Taranacak Puan Türleri: {scan_types}")
 
@@ -784,8 +847,17 @@ async def lifespan(app: FastAPI):
     global redis_client, pw_playwright, pw_browser
     try:
         if hasattr(settings, 'REDIS_URL'):
-            redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True, ssl_cert_reqs=ssl.CERT_NONE)
-            print("[SERVER] 🔌 Redis bağlantısı başlatıldı.")
+            # ssl_cert_reqs YALNIZCA TLS (rediss://) bağlantılarında geçerli.
+            # Düz redis:// ile geçilince redis-py her komutta
+            # "unexpected keyword argument 'ssl_cert_reqs'" hatası veriyordu —
+            # yani retriever'ın Redis'i hiç çalışmıyordu (log stream + DDG cache).
+            _url = str(settings.REDIS_URL)
+            _kwargs = {"decode_responses": True}
+            if _url.startswith("rediss://"):
+                _kwargs["ssl_cert_reqs"] = ssl.CERT_NONE
+            redis_client = redis.from_url(_url, **_kwargs)
+            await redis_client.ping()
+            print(f"[SERVER] 🔌 Redis bağlantısı başlatıldı ({'TLS' if _url.startswith('rediss://') else 'düz'}).")
     except Exception as e:
         print(f"[SERVER] ⚠️ Redis başlatılamadı: {e}")
 

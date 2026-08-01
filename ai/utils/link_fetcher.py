@@ -37,6 +37,35 @@ BLOCKED_DOMAINS: frozenset[str] = frozenset(
 DEFAULT_TIMEOUT: int = 10          # seconds
 DEFAULT_MAX_CHARS: int = 3000      # maximum characters in FetchResult.content
 MIN_CONTENT_CHARS: int = 100       # minimum usable content length
+
+# PDF desteği — ders planı / müfredat katalogları genelde PDF olarak yayınlanır.
+# PyMuPDF yoksa PDF'ler sessizce atlanır (fetch başarısız döner).
+try:
+    import fitz as _fitz  # PyMuPDF
+    _HAS_PDF = True
+except Exception:  # pragma: no cover - ortam bağımlı
+    _fitz = None
+    _HAS_PDF = False
+
+
+def _extract_pdf_text(data: bytes, max_pages: int = 8) -> str:
+    """PDF baytlarından düz metin çıkar. Başarısız olursa boş string döner."""
+    if not _HAS_PDF or not data:
+        return ""
+    try:
+        doc = _fitz.open(stream=data, filetype="pdf")
+        parts = []
+        for i in range(min(max_pages, len(doc))):
+            try:
+                t = doc[i].get_text()
+            except Exception:
+                continue
+            if t and t.strip():
+                parts.append(t.strip())
+        doc.close()
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
 USER_AGENT: str = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 )
@@ -162,6 +191,29 @@ async def fetch_url_content(
                         success=False,
                         content="",
                         error=error_code,
+                        fetch_duration_ms=duration,
+                    )
+
+                # --- PDF? (ders planı / müfredat katalogları çoğunlukla PDF) ---
+                ctype = (response.headers.get("Content-Type") or "").lower()
+                if "application/pdf" in ctype or url.lower().endswith(".pdf"):
+                    pdf_bytes = await response.read()
+                    pdf_text = _extract_pdf_text(pdf_bytes)
+                    duration = int(time.monotonic() * 1000 - start_ms)
+                    if not pdf_text or len(pdf_text) < MIN_CONTENT_CHARS:
+                        return FetchResult(
+                            url=url,
+                            success=False,
+                            content="",
+                            error="pdf_unreadable",
+                            fetch_duration_ms=duration,
+                        )
+                    logger.info("[LINK_FETCHER] 📄 PDF okundu — %s (%d kr)", url, len(pdf_text))
+                    return FetchResult(
+                        url=url,
+                        success=True,
+                        content=pdf_text[:DEFAULT_MAX_CHARS],
+                        error=None,
                         fetch_duration_ms=duration,
                     )
 

@@ -55,6 +55,38 @@ def build_grouped_context(
     return ContextAssemblyResult(context_blocks=context_blocks, fallback_parts=fallback_parts, seen_urls=seen_urls)
 
 
+def build_documents_block(
+    items: Sequence[tuple[str, str]],
+    *,
+    heading: str = "### 📎 İlgili Belgeler",
+) -> str | None:
+    """Konu etiketli belge/kaynak listesi üretir.
+
+    `build_sources_block` düz bir "kaynaklar" listesi verir; bu ise HANGİ
+    belgenin hangi konuya ait olduğunu gösterir. Öğrenci "ders programı"
+    okuduğunda ilgili ders planına (çoğu zaman PDF) doğrudan tıklayabilsin
+    diye deterministik olarak eklenir — LLM'e URL yazdırmak güvenilmez.
+
+    items: [(konu_etiketi, url), ...] — yalnızca gerçekten çekilebilen sayfalar.
+    """
+    seen: set[str] = set()
+    lines: list[str] = []
+
+    for label, url in items:
+        u = (url or "").strip()
+        if not u or u in seen or not label:
+            continue
+        seen.add(u)
+        is_pdf = u.lower().split("?")[0].endswith(".pdf")
+        icon = "📄" if is_pdf else "🔗"
+        suffix = " (PDF)" if is_pdf else ""
+        lines.append(f"- {icon} **{label}**{suffix} — {u}")
+
+    if not lines:
+        return None
+    return heading + "\n" + "\n".join(lines)
+
+
 def build_sources_block(
     grouped_results: Sequence[Sequence[Mapping[str, Any]]],
     *,
