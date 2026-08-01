@@ -194,7 +194,8 @@ def _pick_urls_by_topic(topic_results: dict[str, list], max_total: int = 8,
                 continue
             if any(d in url.lower() for d in _SKIP_FETCH_DOMAINS):
                 continue
-            s = score_url_for_topic(url, topic.key, toks)
+            s = score_url_for_topic(url, topic.key, toks,
+                                    title=(item or {}).get("title", ""))
             if s < 0:
                 continue  # başka üniversitenin resmi sayfası — alma
             scored.append((s, url))

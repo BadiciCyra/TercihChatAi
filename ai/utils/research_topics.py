@@ -15,6 +15,8 @@ konular ise web'den toplanmak zorunda.
 """
 from __future__ import annotations
 
+import unicodedata
+
 # Resmi üniversite kaynakları — müfredat, Erasmus, kadro için en güvenilir
 _OFFICIAL = (".edu.tr", "yok.gov.tr", "yokatlas.yok.gov.tr", "uniar.yok.gov.tr")
 # Öğrenci deneyimi kaynakları
@@ -35,6 +37,15 @@ class Topic:
 
 # Sıra ÖNEMLİ: üstteki konular kota dağıtımında öncelikli.
 TOPICS: list[Topic] = [
+    Topic(
+        # Üniversitenin KENDİ sitesi birincil kaynaktır. Bu konu olmadan
+        # aramalar universitekayit / dormhouse gibi üçüncü parti derleyici
+        # sitelerle doluyor ve cevapta hiç resmi kaynak olmuyordu.
+        "resmi_site", "Resmi Üniversite Sitesi",
+        ["{uni} resmi web sitesi hakkımızda",
+         "{uni} tanıtım fakülteler bölümler resmi"],
+        _OFFICIAL, quota=2,
+    ),
     Topic(
         "ders_programi", "Ders Programı / Müfredat",
         ["{uni} {bolum} ders planı müfredat bologna",
@@ -176,16 +187,22 @@ def uni_tokens(uni_adi: str) -> list[str]:
     """
     if not uni_adi:
         return []
-    t = uni_adi.lower()
+    # Türkçe 'İ'.lower() → 'i' + U+0307 (birleşen nokta) üretir. Nokta
+    # temizlenmezse "İstanbul" → "i stanbul" olarak bölünüp token 'stanbul'
+    # kalıyordu. Önce büyük harfleri elle eşle, sonra birleşen işaretleri at.
+    t = uni_adi.replace("İ", "i").replace("I", "ı").lower()
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
     for a, b in (("ç", "c"), ("ğ", "g"), ("ı", "i"), ("ö", "o"),
-                 ("ş", "s"), ("ü", "u"), ("İ", "i")):
+                 ("ş", "s"), ("ü", "u")):
         t = t.replace(a, b)
     words = [w for w in "".join(c if c.isalnum() else " " for c in t).split()
              if len(w) > 3 and w not in _GENERIC_UNI_TOKENS]
     return words
 
 
-def score_url_for_topic(url: str, topic_key: str, uni_toks: list[str] | None = None) -> int:
+def score_url_for_topic(url: str, topic_key: str, uni_toks: list[str] | None = None,
+                        title: str = "") -> int:
     """URL'nin bu konu için ne kadar uygun olduğunu puanla (büyük = iyi)."""
     t = TOPIC_BY_KEY.get(topic_key)
     if not t or not url:
@@ -209,8 +226,55 @@ def score_url_for_topic(url: str, topic_key: str, uni_toks: list[str] | None = N
     # Doğru okulun alan adı geçiyorsa ödüllendir; .edu.tr olup hiçbir token
     # tutmuyorsa büyük olasılıkla başka bir üniversitedir → ağır ceza.
     if uni_toks:
-        if any(tok in u for tok in uni_toks):
+        # Başlıkta üniversite adı geçiyor mu? Kısaltma alan adı kullanan
+        # okulların (boun.edu.tr, ieu.edu.tr, metu.edu.tr) KENDİ siteleri
+        # URL'den tanınamıyor; başlık bunu kurtarıyor. Bu kontrol olmadan
+        # resmi siteleri "başka üniversite" sanıp eliyorduk.
+        title_norm = _norm_tr(title)
+        title_match = bool(title_norm) and all(tok in title_norm for tok in uni_toks)
+
+        if _is_own_domain(u, uni_toks) or (".edu.tr" in u and title_match):
+            # Üniversitenin KENDİ resmi sitesi her konuda birincil kaynak.
+            score += 30
+        elif any(tok in u for tok in uni_toks) or title_match:
             score += 12
         elif ".edu.tr" in u:
             score -= 20
     return score
+
+
+def _norm_tr(s: str) -> str:
+    """Başlık karşılaştırması için Türkçe-duyarlı normalize."""
+    if not s:
+        return ""
+    t = s.replace("İ", "i").replace("I", "ı").lower()
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    for a, b in (("ç", "c"), ("ğ", "g"), ("ı", "i"), ("ö", "o"),
+                 ("ş", "s"), ("ü", "u")):
+        t = t.replace(a, b)
+    return t
+
+
+def _is_own_domain(url_lower: str, uni_toks: list[str]) -> bool:
+    """URL, bu üniversitenin kendi resmi alan adı mı?
+
+    Resmi alan adları genelde tokenları BİTİŞİK yazar:
+      "İstanbul Rumeli Üniversitesi" → istanbulrumeli.edu.tr
+      "Boğaziçi Üniversitesi"        → boun.edu.tr (token tutmaz, es geçilir)
+    """
+    if ".edu.tr" not in url_lower:
+        return False
+    # Alan adı kısmını al (şema ve yoldan arındır)
+    host = url_lower.split("//")[-1].split("/")[0]
+    host_compact = host.replace("-", "").replace(".", "")
+    if not uni_toks:
+        return False
+    # Tüm tokenlar bitişik halde alan adında geçiyorsa kendi sitesidir
+    joined = "".join(uni_toks)
+    if joined and joined in host_compact:
+        return True
+    # Tek ayırt edici token varsa (örn "hacettepe") o da yeterli
+    if len(uni_toks) == 1 and uni_toks[0] in host_compact:
+        return True
+    return False

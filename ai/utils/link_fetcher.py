@@ -230,7 +230,26 @@ async def fetch_url_content(
             error="timeout",
             fetch_duration_ms=duration,
         )
-    except Exception as exc:  # noqa: BLE001
+    except aiohttp.ClientError as exc:
+        # Ağ/TLS hataları RUTİNDİR: geçersiz sertifika, DNS hatası, bağlantı
+        # reddi... Web'de gezinen bir scraper için beklenen durumlar.
+        # Eskiden logger.exception ile tam traceback basılıyordu ve production
+        # logu tek bir bozuk sertifika yüzünden onlarca satır şişiyordu.
+        duration = int(time.monotonic() * 1000 - start_ms)
+        kind = type(exc).__name__
+        if "Certificate" in kind or "SSL" in kind:
+            code = "ssl_error"
+        else:
+            code = "connection_error"
+        logger.warning("[LINK_FETCHER] ❌ %s — %s (%s)", url, code, kind)
+        return FetchResult(
+            url=url,
+            success=False,
+            content="",
+            error=code,
+            fetch_duration_ms=duration,
+        )
+    except Exception as exc:  # noqa: BLE001 — gerçekten beklenmeyen hatalar
         duration = int(time.monotonic() * 1000 - start_ms)
         error_msg = str(exc)[:120]
         logger.exception("[LINK_FETCHER] ❌ %s — %s", url, error_msg)
