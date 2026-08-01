@@ -17,6 +17,7 @@ interface AskBody {
   query?: unknown;
   session_id?: unknown;
   mode?: unknown;
+  fresh?: unknown;
 }
 
 export async function POST(request: Request) {
@@ -48,6 +49,9 @@ export async function POST(request: Request) {
 
   const payload: Record<string, unknown> = { query, session_id: sessionId };
   if (mode) payload.mode = mode;
+  // "Yeni sohbet"in ilk isteği: gateway cevap cache'inden okumaz, taze üretir.
+  // Cache'e yazma sürdüğü için başka kullanıcıların cache'i etkilenmez.
+  if (body.fresh === true) payload.fresh = true;
 
   // Forum'un ürettiği imzalı kullanıcı token'ı — günlük kota bunun üzerinden
   // uygulanır. Yoksa istek eskisi gibi (kotasız) geçer; zorunluluk gateway

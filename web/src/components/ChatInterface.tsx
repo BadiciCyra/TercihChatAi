@@ -42,6 +42,10 @@ export function ChatInterface() {
 
   const sessionId = useRef<string>("");
   const userToken = useRef<string>("");
+  // "Yeni sohbet"e basıldığında true olur; SADECE sonraki ilk istekte
+  // gönderilir ve hemen sıfırlanır. Backend bu istekte cevap cache'ini
+  // okumaz (taze üretir) ama cache'e yazmaya devam eder.
+  const freshChat = useRef<boolean>(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -113,6 +117,11 @@ export function ChatInterface() {
       setInput("");
       setBusy(true);
 
+      // fresh bayrağı YALNIZCA bu ilk istekte geçerli; hemen tüketiliyor ki
+      // sohbetin geri kalanı normal cache davranışına dönsün.
+      const useFresh = freshChat.current;
+      freshChat.current = false;
+
       const started = Date.now();
       try {
         const resp = await fetch("/api/ask", {
@@ -127,6 +136,7 @@ export function ChatInterface() {
             query,
             session_id: sessionId.current,
             mode: activeMode,
+            ...(useFresh ? { fresh: true } : {}),
           }),
         });
         const data = await resp.json();
@@ -212,6 +222,8 @@ export function ChatInterface() {
                 setMessages([]);
                 // Yeni sohbet = yeni session = backend'de taze hafıza.
                 sessionId.current = "web-" + uid();
+                // Bir sonraki soru cevap cache'inden değil, taze üretilsin.
+                freshChat.current = true;
               }
             : undefined
         }

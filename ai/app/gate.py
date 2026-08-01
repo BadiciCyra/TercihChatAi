@@ -280,6 +280,10 @@ class AskRequest(BaseModel):
     query: str
     session_id: str = "default_session"
     mode: Optional[ChatMode] = None  # None → NER otomatik yönlendirme
+    # "Yeni sohbet"in İLK isteğinde true gelir: cevap cache'inden OKUMA atlanır,
+    # taze cevap üretilir. Cache'e YAZMA sürer — böylece taze cevap diğer
+    # kullanıcılara da fayda sağlar ve kimsenin cache'i silinmez.
+    fresh: bool = False
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -372,9 +376,14 @@ async def ask_intelligent_system(
     if is_context_dependent:
         logger.info("[CACHE] ⏭️ Bağlama bağlı soru — cevap cache'i atlanıyor")
 
+    # "Yeni sohbet" → taze cevap. Sadece OKUMA atlanır; yazma sürer.
+    skip_cache_read = is_context_dependent or req.fresh
+    if req.fresh:
+        logger.info("[CACHE] 🆕 Yeni sohbet — cevap cache'i okunmuyor (taze üretilecek)")
+
     # ⚡ CACHE CHECK: Aynı/benzer soru cache'te varsa LLM çağrısı yapma
     # _cache_key(mode, query) None dönerse (guidance) cache tamamen atlanır
-    cached_answer = None if is_context_dependent else cache_get(req.query, mode=req.mode)
+    cached_answer = None if skip_cache_read else cache_get(req.query, mode=req.mode)
     if cached_answer:
         request.state.cache_hit = True
         # Cache hit'te graph çalışmaz, dolayısıyla "son arama" hafızası da
@@ -420,6 +429,9 @@ async def ask_intelligent_system(
             # sarmalı), bu yüzden "son arama" hafızasını oturuma bağlamak için
             # thread_id'yi doğrudan state'e koyuyoruz.
             "session_id": thread_resolution.thread_id,
+            # Node'ların KENDİ cache'leri de var (örn. uni_info); "yeni sohbet"
+            # taze cevap istediğinde onların da atlanması gerekiyor.
+            "fresh": req.fresh,
             "ner_context": {},           # NER node tarafından doldurulacak
             "iteration_count": 0,        # Sonsuz döngü koruması için
             # Deep Search alanları

@@ -146,3 +146,6 @@ class AgentState(TypedDict):
     # edilir; node'lar SADECE OKUR. "Son arama" hafızasının kullanıcıya özel
     # tutulması için gerekli — paylaşılan kova oturumlar arası sızıntı yapıyordu.
     session_id: Optional[str]
+    # "Yeni sohbet"in ilk isteği: node'lar kendi cache'lerini ATLAMALI.
+    # gate.py tarafından bir kez set edilir; node'lar SADECE OKUR.
+    fresh: Optional[bool]

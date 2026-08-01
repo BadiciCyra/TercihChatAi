@@ -357,11 +357,16 @@ async def uni_info_node(state: AgentState) -> dict:
     print(f"[UNI_INFO] 🧠 QueryPlan: source={plan.source}, is_specific={is_specific}, {len(queries)} sorgu")
 
     # Genel soru ise cache kontrolü yap (spesifik sorular cache'lenmez — kullanıcıya özel)
+    # "Yeni sohbet" (fresh) geldiyse cache'ten OKUMA atlanır; yazma sürer.
+    is_fresh = bool(state.get("fresh"))
     if not is_specific:
         cache_key = _uni_info_cache_key(uni)
-        cached = _load_uni_info_cache(cache_key)
-        if cached:
-            return {"messages": [AIMessage(content=cached)]}
+        if is_fresh:
+            print("[UNI_INFO] 🆕 Yeni sohbet — araştırma cache'i okunmuyor")
+        else:
+            cached = _load_uni_info_cache(cache_key)
+            if cached:
+                return {"messages": [AIMessage(content=cached)]}
     else:
         cache_key = None
 
