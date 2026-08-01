@@ -415,6 +415,38 @@ def _is_followup_question(text: str) -> bool:
     return False
 
 
+# "X Üniversitesi" kalıbında ADIN PARÇASI OLAMAYACAK kelimeler.
+# Selamlama/dolgu (kanka, selam...) ve jenerik niteleyiciler (yalnızca, devlet...)
+# aksi halde üniversite adına yapışıp tüm arama sorgularını bozuyor.
+_UNI_NAME_STOPWORDS = frozenset({
+    # selamlama / hitap / dolgu
+    "kanka", "selam", "merhaba", "slm", "mrb", "naber", "abi", "abla", "hocam",
+    "ya", "yaa", "peki", "acaba", "bir", "bana", "bize", "sen", "siz", "ben",
+    "lütfen", "lutfen", "şey", "sey", "de", "da", "ki", "ise", "ve", "ile",
+    "için", "icin", "hakkında", "hakkinda", "bu", "şu", "su", "o",
+    # soru / değerlendirme kelimeleri
+    "hangi", "hangisi", "nasıl", "nasil", "nedir", "iyi", "kötü", "kotu",
+    "en", "çok", "cok", "daha", "mi", "mı", "mu", "mü",
+    # jenerik niteleyiciler
+    "yalnızca", "yalnizca", "sadece", "sırf", "sirf", "devlet", "vakıf", "vakif",
+    "özel", "ozel", "tüm", "tum", "bütün", "butun", "hepsi", "diğer", "diger",
+})
+
+
+def _tr_title(s: str) -> str:
+    """Türkçe kurallara göre baş harfleri büyüt ('istanbul' → 'İstanbul').
+
+    str.title() 'i' harfini 'I' yapıyor; Türkçe'de doğrusu 'İ'.
+    """
+    out = []
+    for w in s.split():
+        if not w:
+            continue
+        first = "İ" if w[0] == "i" else w[0].upper()
+        out.append(first + w[1:])
+    return " ".join(out)
+
+
 def _extract_uni_from_text(text: str) -> Optional[str]:
     """Mesajdan üniversite adı yakala (kısaltma + tam isim).
     Kısaltmalar için word boundary kontrolü — 'BÜ' substring'i 'Bülent' içinde eşleşmemeli.
@@ -433,12 +465,35 @@ def _extract_uni_from_text(text: str) -> Optional[str]:
             return full
 
     # "X üniversitesi" pattern'i
-    import re as _re
-    m = _re.search(r'([A-ZÇĞİÖŞÜa-zçğıöşü\s]+?)\s+üniversit', text, _re.IGNORECASE)
-    if m:
-        name = m.group(1).strip()
+    #
+    # DİKKAT: Eski regex `([A-Za-z...\s]+?)\s+üniversit` idi. Karakter sınıfında
+    # \s bulunduğu ve search leftmost eşleşmeyi aldığı için cümlenin BAŞINDAN
+    # itibaren her şeyi yutuyordu:
+    #   "Kanka selam istanbul rumeli Üniversitesi"
+    #     → "Kanka selam istanbul rumeli Üniversitesi"
+    # Bu ad tüm konu sorgularına giriyor ve aramalar boşa çıkıyordu.
+    # Çözüm: "üniversite" kelimesinden ÖNCEKİ en fazla 3 kelimeyi al, baştaki
+    # selamlama/dolgu kelimelerini at.
+    # Konumu ORİJİNAL metin üzerinden bul. t_lower kullanılamaz: Türkçe 'İ'
+    # küçültülünce 'i'+U+0307 (iki karakter) olur ve indeksler kayar — bu
+    # yüzden "İstanbul Teknik Üniversitesi" → "İstanbul Teknik Ü" oluyordu.
+    _m_uni = _re.search(r'[üu]niversit', text, _re.IGNORECASE)
+    pos = _m_uni.start() if _m_uni else -1
+    if pos > 0:
+        before = text[:pos].strip()
+        # Noktalama sonrası son cümleciği al ("Merhaba, Boğaziçi Üniversitesi")
+        for sep in (",", ".", "!", "?", ":", ";"):
+            if sep in before:
+                before = before.rsplit(sep, 1)[-1]
+        words = [w for w in before.split() if w]
+        cand = words[-3:]  # üniversite adları genelde 1-3 kelime
+        while cand and cand[0].lower().strip(".,!?:;'\"") in _UNI_NAME_STOPWORDS:
+            cand.pop(0)
+        while cand and cand[-1].lower().strip(".,!?:;'\"") in _UNI_NAME_STOPWORDS:
+            cand.pop()
+        name = " ".join(cand).strip()
         if len(name) >= 3:
-            return f"{name} Üniversitesi"
+            return f"{_tr_title(name)} Üniversitesi"
     return None
 
 
