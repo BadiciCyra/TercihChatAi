@@ -543,6 +543,7 @@ async def search_yok_atlas(entities):
     city_query = turkce_upper((entities.get("IL") or [""])[0])
     uni_type_filter = (entities.get("UNI_TYPE") or [""])[0]
     burs_filter = (entities.get("FEE_TYPE") or [""])[0]
+    ogretim_turu_filter = (entities.get("OGRETIM_TURU") or [""])[0]
     
     # Puan türü normalizasyonu
     normalized_type = normalize_puan_turu(entities.get("TUR"))
@@ -561,7 +562,16 @@ async def search_yok_atlas(entities):
             print(f"[RETRIEVER] ⚠️ Puan türü çözümlenemedi: {e}")
 
     # Hâlâ yoksa hepsini tara (son çare)
-    scan_types = [normalized_type] if normalized_type else ["say", "ea", "söz", "dil"]
+    # Açık/Uzaktan öğretim programları ağırlıklı TYT puanıyla yerleşiyor;
+    # bu istekte TYT taranmazsa kullanıcıya hiçbir şey çıkmaz.
+    if normalized_type:
+        scan_types = [normalized_type]
+    elif ogretim_turu_filter:
+        scan_types = ["tyt", "say", "ea", "söz", "dil"]
+    else:
+        scan_types = ["say", "ea", "söz", "dil"]
+    if ogretim_turu_filter:
+        print(f"[RETRIEVER] 🎓 Öğretim türü filtresi: {ogretim_turu_filter}")
     print(f"[RETRIEVER] 🔍 Taranacak Puan Türleri: {scan_types}")
 
     # Sıralama aralığı belirle (Smart Search için)
@@ -585,8 +595,9 @@ async def search_yok_atlas(entities):
             "program": program_query, 
             "puan_turu": p_turu, 
             "sehir": city_query, 
-            "universite_turu": uni_type_filter, 
-            "ucret": burs_filter, 
+            "universite_turu": uni_type_filter,
+            "ucret": burs_filter,
+            "ogretim_turu": ogretim_turu_filter, 
             "ust_bs": str(api_ust_bs) if target_rank else "",
             "alt_bs": str(api_alt_bs) if target_rank else ""
         }
@@ -964,6 +975,10 @@ class YokAtlasRequest(BaseModel):
     uni_type:   Optional[str] = None
     score_type: Optional[str] = None
     fee_type:   Optional[str] = None
+    # "acik" | "uzaktan" — Açık/Uzaktan Öğretim programları için sunucu
+    # tarafı filtre (ogrenimTuruId). Bunlar örgün programlardan ayrı ve
+    # sıralamaları çok yüksek olabiliyor.
+    ogretim_turu: Optional[str] = None
 
 
 class WebSearchRequest(BaseModel):
@@ -995,6 +1010,7 @@ async def retrieve_yok_atlas(req: YokAtlasRequest):
     if req.uni_type:   entities["UNI_TYPE"]  = [req.uni_type]
     if req.score_type: entities["TUR"]       = [req.score_type]
     if req.fee_type:   entities["FEE_TYPE"]  = [req.fee_type]
+    if req.ogretim_turu: entities["OGRETIM_TURU"] = [req.ogretim_turu]
 
     if not entities:
         return {

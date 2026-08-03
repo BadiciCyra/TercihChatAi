@@ -39,18 +39,28 @@ _DEFAULT_HEADERS = {
 
 
 # ── Puan türü normalize: yokatlas-py içi formatından yeni API formatına ──
+# DİKKAT: API Türkçe karakterli değer bekliyor — "SÖZ" ve "DİL".
+# ASCII "SOZ"/"DIL" gönderildiğinde 0 kayıt dönüyordu (ölçüldü), yani sözel ve
+# dil aramaları sessizce boş kalıyordu.
 _PUAN_TURU_MAP = {
     "say": "SAY",
     "sayisal": "SAY",
     "sayısal": "SAY",
     "ea": "EA",
     "tm": "EA",
-    "soz": "SOZ",
-    "söz": "SOZ",
-    "sozel": "SOZ",
-    "sözel": "SOZ",
-    "dil": "DIL",
+    "soz": "SÖZ",
+    "söz": "SÖZ",
+    "sozel": "SÖZ",
+    "sözel": "SÖZ",
+    "dil": "DİL",
     "tyt": "TYT",
+}
+
+# Öğrenim türü (API'den ölçülen id'ler) — açık/uzaktan öğretim filtresi için
+OGRENIM_TURU_IDS = {
+    "orgun": 86,
+    "uzaktan": 182,
+    "acik": 203,
 }
 
 
@@ -383,6 +393,13 @@ def _build_payload(params: dict, resolved: Optional[dict] = None) -> dict:
         "sortBy": "basariSirasi",
         "direction": "ASC",
     }
+
+    # Öğrenim türü filtresi (açık öğretim / uzaktan öğretim)
+    ogr = params.get("ogretim_turu")
+    if ogr:
+        oid = OGRENIM_TURU_IDS.get(str(ogr).lower().strip())
+        if oid:
+            payload["filters"]["ogrenimTuruId"] = oid
 
     # Üniversite türü filtre
     uni_turu = (params.get("universite_turu") or "").upper()

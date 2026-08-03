@@ -101,22 +101,68 @@ def _extract_rank_from_text(text: str) -> Optional[str]:
     """
     if not text:
         return None
-    # Format: 150k / 150 k
-    m = re.search(r'(\d{1,3})\s*(?:k)\b', text, re.IGNORECASE)
+
+    # Format: "1 milyon 300 bin" / "1,3 milyon" / "2 milyon"
+    # ÖNCE bu kontrol edilmeli: aksi halde "1 milyon 300 bin" ifadesinden
+    # sadece "300 bin" yakalanıp 1.300.000 yerine 300.000 okunuyordu.
+    m = re.search(
+        r'(\d+(?:[.,]\d+)?)\s*milyon(?:\s*(\d{1,3})\s*bin)?',
+        text, re.IGNORECASE,
+    )
+    if m:
+        try:
+            milyon = float(m.group(1).replace(",", "."))
+            toplam = int(milyon * 1_000_000)
+            if m.group(2):
+                toplam += int(m.group(2)) * 1000
+            return str(toplam)
+        except Exception:
+            pass
+
+    # Format: 1.300.000 (Türkçe noktalı, milyonlu)
+    m = re.search(r'\b(\d{1,3})\.(\d{3})\.(\d{3})\b', text)
+    if m:
+        return m.group(1) + m.group(2) + m.group(3)
+
+    # Format: 150k / 150 k  (1300k → 1.300.000 için 1-4 basamak)
+    m = re.search(r'(\d{1,4})\s*(?:k)\b', text, re.IGNORECASE)
     if m:
         return str(int(m.group(1)) * 1000)
-    # Format: 25 bin / 25bin
-    m = re.search(r'(\d{1,3})\s*bin\b', text, re.IGNORECASE)
+
+    # Format: 25 bin / 25bin / 1300 bin
+    m = re.search(r'(\d{1,4})\s*bin\b', text, re.IGNORECASE)
     if m:
         return str(int(m.group(1)) * 1000)
+
     # Format: 50.000 / 150.000 (Turkish dot-separated thousands)
     m = re.search(r'\b(\d{1,3})\.(\d{3})\b', text)
     if m:
         return m.group(1) + m.group(2)
+
     # Format: 200000 (plain integer 4-7 digits)
     m = re.search(r'\b(\d{4,7})\b', text)
     if m:
         return m.group(1)
+    return None
+
+
+def _extract_ogretim_turu_from_text(text: str) -> Optional[str]:
+    """Mesajdan öğretim türü yakala: 'acik' | 'uzaktan' | None.
+
+    YÖK Atlas'ta bunlar ayrı öğrenim türleri (Açık Öğretim id=203, Uzaktan
+    id=182) ve sıralamaları çok yüksek olabiliyor (açıkta 1.686.000'e kadar).
+    Örgün programlar arasında aranınca bu kullanıcılara hiçbir şey çıkmıyordu.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    t = t.replace("ı", "i").replace("ç", "c").replace("ğ", "g")
+    t = t.replace("ö", "o").replace("ş", "s").replace("ü", "u")
+    # "açık öğretim", "açıköğretim", "aöf"
+    if "acikogretim" in t.replace(" ", "") or "aof" in t.split() or "acik ogretim" in t:
+        return "acik"
+    if "uzaktan" in t:
+        return "uzaktan"
     return None
 
 

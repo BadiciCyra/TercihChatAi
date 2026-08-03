@@ -12,6 +12,7 @@ from utils.redis_cache import _save_last_entities, _load_last_entities
 from utils.context_assembly import build_link_supplement
 from utils.link_fetcher import fetch_url_content, FetchResult
 from utils.extractors import (
+    _extract_ogretim_turu_from_text,
     _extract_rank_from_text,
     _extract_program_from_text,
     _extract_city_from_text,
@@ -66,7 +67,8 @@ async def _fast_yok_atlas_lookup(ner_ctx: dict) -> Optional[str]:
     _RETRIEVER_URL = os.getenv("RETRIEVER_URL", "http://ai-retriever:8000")
     payload = {}
     for src, dst in [("rank","rank"),("program","program"),("uni","uni"),("city","city"),
-                     ("uni_type","uni_type"),("score_type","score_type"),("fee_type","fee_type")]:
+                     ("uni_type","uni_type"),("score_type","score_type"),("fee_type","fee_type"),
+                     ("ogretim_turu","ogretim_turu")]:
         v = ner_ctx.get(src)
         if v:
             payload[dst] = v
@@ -350,7 +352,16 @@ async def fast_lookup_node(state: AgentState, config: dict | None = None) -> dic
                 ner_ctx["uni_type"] = v
                 print(f"[FAST_LOOKUP] 🔧 Uni type regex: {v}")
 
-    has_any_entity = any(ner_ctx.get(k) for k in ("rank", "program", "uni", "city"))
+    # Açık/Uzaktan öğretim isteği — NER'den bağımsız, her zaman metinden bakılır.
+    # Bu programlar YÖK Atlas'ta ayrı öğrenim türü (id 203/182) ve sıralamaları
+    # 1.6 milyona kadar çıkabiliyor; örgün havuzda aranınca sonuç çıkmıyordu.
+    if not ner_ctx.get("ogretim_turu"):
+        v = _extract_ogretim_turu_from_text(user_text)
+        if v:
+            ner_ctx["ogretim_turu"] = v
+            print(f"[FAST_LOOKUP] 🎓 Öğretim türü regex: {v}")
+
+    has_any_entity = any(ner_ctx.get(k) for k in ("rank", "program", "uni", "city", "ogretim_turu"))
     is_followup = _is_followup_question(user_text)
     print(f"[FAST_LOOKUP] 🔍 has_any_entity={has_any_entity}, is_followup={is_followup}, messages_len={len(messages)}")
 
