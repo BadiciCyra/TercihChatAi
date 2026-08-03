@@ -56,11 +56,13 @@ _PUAN_TURU_MAP = {
     "tyt": "TYT",
 }
 
-# Öğrenim türü (API'den ölçülen id'ler) — açık/uzaktan öğretim filtresi için
+# Öğrenim türü — API'den ÖLÇÜLEN id'ler (6000 kayıt taraması, 2026 kılavuzu).
+# Başka tür yok; "İkinci Öğretim" 2026 verisinde bulunmuyor.
 OGRENIM_TURU_IDS = {
-    "orgun": 86,
-    "uzaktan": 182,
-    "acik": 203,
+    "orgun": 86,      # 5450 program
+    "uzaktan": 182,   # 22 program, sıralama 2.253.998'e kadar
+    "acik": 203,      # 6 program, sıralama 1.686.098'e kadar
+    "uolp": 188,      # uluslararası ortak lisans programı
 }
 
 

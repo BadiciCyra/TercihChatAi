@@ -769,6 +769,40 @@ async def search_yok_atlas(entities):
             all_results = all_results[:30]
             print(f"[RETRIEVER] 📍 Hedef sıralama {target_rank}'a en yakın {len(all_results)} sonuç seçildi.")
 
+    # --- AŞAMA 5: ÖĞRETİM TÜRÜ KURTARMASI ---
+    # Kullanıcı açık/uzaktan öğretim istediğinde ve sıralaması bu programların
+    # taban sıralarından KÖTÜYSE (örn. 2.000.000; açıköğretimde en kötü taban
+    # 1.686.098) aralık filtresi her şeyi eliyor. Bölüm adı da yoksa Aşama 3/4
+    # devreye girmiyor ve kullanıcı boş cevap alıyordu.
+    # Bu durumda rank filtresiz tarayıp EN ULAŞILABİLİR (taban sırası en kötü)
+    # programları gösteriyoruz — öğrenciye gerçekten yardımcı olan liste bu.
+    if not all_results and ogretim_turu_filter:
+        print(f"\n[RETRIEVER] 🎓 Aşama 5: '{ogretim_turu_filter}' — rank filtresiz tarama...")
+        for p_turu in ["tyt", "say", "ea", "söz", "dil"]:
+            try:
+                params5 = {
+                    "length": 1000,
+                    "puan_turu": p_turu,
+                    "ogretim_turu": ogretim_turu_filter,
+                }
+                if program_query:
+                    params5["program"] = program_query
+                res = await loop.run_in_executor(
+                    None, lambda p=params5: search_lisans_programs(p, smart_search=False)
+                )
+                if res:
+                    all_results.extend(res)
+            except Exception as e:
+                print(f"[RETRIEVER] 💥 Aşama 5 hatası ({p_turu}): {e}")
+        if all_results:
+            # Taban sırası en KÖTÜ (büyük sayı) olanlar en ulaşılabilir olanlar
+            def _rank_of(item):
+                _, r = _pick_best_year_rank(item.get('tbs') or {})
+                return r if r is not None else -1
+            all_results.sort(key=_rank_of, reverse=True)
+            all_results = all_results[:30]
+            print(f"[RETRIEVER] 🎯 Aşama 5: en ulaşılabilir {len(all_results)} program seçildi.")
+
     # 3. Sonuç Kontrolü
     print(f"\n[RETRIEVER] Toplam Ham Sonuç: {len(all_results)}")
 

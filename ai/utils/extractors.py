@@ -147,22 +147,37 @@ def _extract_rank_from_text(text: str) -> Optional[str]:
 
 
 def _extract_ogretim_turu_from_text(text: str) -> Optional[str]:
-    """Mesajdan öğretim türü yakala: 'acik' | 'uzaktan' | None.
+    """Mesajdan öğretim türü yakala: 'acik' | 'uzaktan' | 'orgun' | 'uolp' | None.
 
-    YÖK Atlas'ta bunlar ayrı öğrenim türleri (Açık Öğretim id=203, Uzaktan
-    id=182) ve sıralamaları çok yüksek olabiliyor (açıkta 1.686.000'e kadar).
-    Örgün programlar arasında aranınca bu kullanıcılara hiçbir şey çıkmıyordu.
+    YÖK Atlas 2026 verisinde ÖLÇÜLEN öğrenim türleri (başka tür yok;
+    "İkinci Öğretim" artık mevcut değil):
+      Örgün Öğretim   id=86   (5450 program)
+      Uzaktan Öğretim id=182  (22)   — sıralama 2.253.998'e kadar
+      Açık Öğretim    id=203  (6)    — sıralama 1.686.098'e kadar
+      UOLP            id=188  (1)    — uluslararası ortak lisans
+
+    Açık/uzaktan programlar örgün havuzda aranınca hiç sonuç çıkmıyordu.
     """
     if not text:
         return None
     t = text.lower()
     t = t.replace("ı", "i").replace("ç", "c").replace("ğ", "g")
     t = t.replace("ö", "o").replace("ş", "s").replace("ü", "u")
-    # "açık öğretim", "açıköğretim", "aöf"
-    if "acikogretim" in t.replace(" ", "") or "aof" in t.split() or "acik ogretim" in t:
+    nospace = t.replace(" ", "")
+    words = t.split()
+
+    # Sıra önemli: "açık öğretim" ifadesi "öğretim" kelimesini de içerdiği için
+    # önce spesifik olanlar kontrol edilir.
+    if "acikogretim" in nospace or "aof" in words or "acik ogretim" in t:
         return "acik"
-    if "uzaktan" in t:
+    if "uzaktan" in t or "online egitim" in t or "cevrimici" in nospace:
         return "uzaktan"
+    if "uolp" in words or "ortak lisans" in t or "cift diploma" in t:
+        return "uolp"
+    # Örgün: "örgün", "normal öğretim", "yüz yüze", "kampüste okumak"
+    if ("orgun" in nospace or "yuzyuze" in nospace
+            or "normal ogretim" in t or "kampuste" in t):
+        return "orgun"
     return None
 
 
