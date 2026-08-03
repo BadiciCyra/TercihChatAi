@@ -3,6 +3,7 @@ import unicodedata
 from typing import Optional, Any
 from langchain_core.messages import HumanMessage
 from utils.validators import get_msg_content
+from utils.text_norm import tr_lower, tr_ascii
 
 # Üniversite kısaltma → tam isim mapping
 UNI_MAPPING = {
@@ -161,9 +162,7 @@ def _extract_ogretim_turu_from_text(text: str) -> Optional[str]:
     """
     if not text:
         return None
-    t = text.lower()
-    t = t.replace("ı", "i").replace("ç", "c").replace("ğ", "g")
-    t = t.replace("ö", "o").replace("ş", "s").replace("ü", "u")
+    t = tr_ascii(text)
     nospace = t.replace(" ", "")
     words = t.split()
 
@@ -188,7 +187,9 @@ def _extract_program_from_text(text: str) -> Optional[str]:
     Böylece 'havacılık elektrik elektroniği' → Elektrik değil, doğru bölüm dönüyor."""
     if not text:
         return None
-    t = text.lower()
+    # tr_lower: "İnşaat Mühendisliği".lower() birleşen nokta üretiyor ve
+    # eşleşme kayıyordu — "İnşaat" sorgusu "Diş Hekimliği" döndürüyordu.
+    t = tr_lower(text)
 
     # ÖNCELİK 1: Bileşik/spesifik isimler (uzun → kısa sırada)
     compound_aliases = [
@@ -355,19 +356,6 @@ def _extract_program_from_text(text: str) -> Optional[str]:
     return None
 
 
-def _tr_lower(s: str) -> str:
-    """Türkçe-güvenli küçük harf: 'İ' → 'i' (birleşen nokta bırakmadan).
-
-    Python'da "İ".lower() iki karakter ('i' + U+0307) üretir; bu işaret
-    metinde kalınca kelime eşleşmeleri sessizce başarısız olur.
-    """
-    if not s:
-        return ""
-    s = s.replace("İ", "i").replace("I", "ı")
-    s = unicodedata.normalize("NFKD", s.lower())
-    return "".join(ch for ch in s if not unicodedata.combining(ch))
-
-
 def _extract_city_from_text(text: str) -> Optional[str]:
     """Mesajdan şehir adı yakala. 'istanbulda', 'ankarada' gibi ek almış halleri de tanır.
     Eksiz hali de yakalar: 'İzmir burslu' → İzmir."""
@@ -377,7 +365,7 @@ def _extract_city_from_text(text: str) -> Optional[str]:
     # temizlenmezse _CITY_VARIANTS anahtarlarıyla ("izmir") eşleşme TUTMAZ ve
     # şehir filtresi sessizce uygulanmaz. Aynı tuzak daha önce üniversite adı
     # ve token çıkarımında da yaşandı.
-    t = ' ' + _tr_lower(text) + ' '
+    t = ' ' + tr_lower(text) + ' '
     # Kesme işareti ve uzun ekler DESTEKLENMELİ: "İzmir'de", "İstanbul'dakiler"
     # gibi yaygın yazımlar eskiden hiç eşleşmiyordu (kesme işareti desende yoktu,
     # 'daki/'dakiler ekleri de listede değildi) → şehir filtresi sessizce
@@ -398,9 +386,10 @@ def _extract_score_type_from_text(text: str) -> Optional[str]:
     Basit substring kontrolü — regex word boundary sorunlarını tamamen atlatır."""
     if not text:
         return None
-    t = text.lower()
-    t_norm = (t.replace("ı", "i").replace("ö", "o").replace("ü", "u")
-              .replace("ş", "s").replace("ğ", "g").replace("ç", "c"))
+    # Büyük harfli girdiler ("SAY puanı", "EŞİT AĞIRLIK") eskiden hiç
+    # yakalanmıyordu; tr_lower/tr_ascii bunu çözer.
+    t = " " + tr_lower(text) + " "
+    t_norm = " " + tr_ascii(text) + " "
 
     say_markers = ("sayisal", "sayisalda", "sayisaldan", "sayısal", "sayisalla",
                    " say ", " sayda ", " sayla ", " sayi ", "sayisali")
@@ -462,7 +451,7 @@ def _extract_uni_type_from_text(text: str) -> Optional[str]:
     """
     if not text:
         return None
-    t = text.lower()
+    t = tr_lower(text)
 
     def _negated(kelime_pat: str, diger_pat: str) -> bool:
         """Olumsuzlama BU türe mi ait?

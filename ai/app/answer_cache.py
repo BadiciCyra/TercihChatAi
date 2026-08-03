@@ -32,10 +32,11 @@ def _normalize_for_cache(text: str) -> str:
     """
     if not text:
         return ""
-    t = text.lower().strip()
-    # Türkçe karakterleri ASCII'ye çevir (typo toleransı)
-    tr_map = str.maketrans("çğıöşüâî", "cgiosuai")
-    t = t.translate(tr_map)
+    # tr_ascii: "İSTANBUL ÜNİVERSİTESİ" ile "istanbul üniversitesi" eskiden
+    # FARKLI cache anahtarı üretiyordu ('i̇stanbul' → 'i stanbul'), yani aynı
+    # soru iki kez cache'leniyor ve isabet oranı düşüyordu.
+    from utils.text_norm import tr_ascii as _tr_ascii
+    t = _tr_ascii(text).strip()
     # Sadece alfanumerik + boşluk kalsın
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
     # Çoklu boşlukları teke indir — kelime sırasını KORU (sıralama yok)
