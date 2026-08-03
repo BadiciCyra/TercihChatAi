@@ -862,12 +862,22 @@ async def search_yok_atlas(entities):
     MAX_RESULTS = int(os.getenv("YOK_MAX_RESULTS", "40"))
     if len(final_results) > MAX_RESULTS:
         if city_query:
-            # Şehir eşleşenler önce, geri kalan slotları diğerleriyle doldur
+            # Kullanıcı ŞEHİR BELİRTTİYSE o şehir esastır.
+            # Eskiden kalan slotlar başka şehirlerle dolduruluyordu: "İzmir'de
+            # okuyabilir miyim" sorusuna 40 satırın 21'i İstanbul geliyordu.
+            # Artık yeterli eşleşme varsa SADECE o şehir gösterilir; çok azsa
+            # (kullanıcı elde boş kalmasın diye) diğerleriyle tamamlanır.
             city_matches = [r for r in final_results if city_query.upper() in (r.get('sehir') or '').upper()]
-            others = [r for r in final_results if r not in city_matches]
-            remaining = max(10, MAX_RESULTS - len(city_matches))
-            final_results = city_matches + others[:remaining]
-            print(f"[RETRIEVER] 🏙️ Şehir filtresi: {len(city_matches)} şehir eşleşmesi + {len(others[:remaining])} diğer")
+            _MIN_CITY = int(os.getenv("YOK_MIN_CITY_RESULTS", "5"))
+            if len(city_matches) >= _MIN_CITY:
+                final_results = city_matches[:MAX_RESULTS]
+                print(f"[RETRIEVER] 🏙️ Şehir filtresi (katı): {len(final_results)} × {city_query}")
+            else:
+                others = [r for r in final_results if r not in city_matches]
+                remaining = max(10, MAX_RESULTS - len(city_matches))
+                final_results = city_matches + others[:remaining]
+                print(f"[RETRIEVER] 🏙️ Şehir filtresi: {len(city_matches)} eşleşme az, "
+                      f"{len(others[:remaining])} diğer şehirle tamamlandı")
         else:
             final_results = final_results[:MAX_RESULTS]
 

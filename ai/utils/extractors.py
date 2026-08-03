@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from typing import Optional, Any
 from langchain_core.messages import HumanMessage
 from utils.validators import get_msg_content
@@ -354,14 +355,39 @@ def _extract_program_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _tr_lower(s: str) -> str:
+    """Türkçe-güvenli küçük harf: 'İ' → 'i' (birleşen nokta bırakmadan).
+
+    Python'da "İ".lower() iki karakter ('i' + U+0307) üretir; bu işaret
+    metinde kalınca kelime eşleşmeleri sessizce başarısız olur.
+    """
+    if not s:
+        return ""
+    s = s.replace("İ", "i").replace("I", "ı")
+    s = unicodedata.normalize("NFKD", s.lower())
+    return "".join(ch for ch in s if not unicodedata.combining(ch))
+
+
 def _extract_city_from_text(text: str) -> Optional[str]:
     """Mesajdan şehir adı yakala. 'istanbulda', 'ankarada' gibi ek almış halleri de tanır.
     Eksiz hali de yakalar: 'İzmir burslu' → İzmir."""
     if not text:
         return None
-    t = ' ' + text.lower() + ' '
+    # DİKKAT: "İzmir".lower() → "i̇zmir" (i + U+0307 birleşen nokta). Bu işaret
+    # temizlenmezse _CITY_VARIANTS anahtarlarıyla ("izmir") eşleşme TUTMAZ ve
+    # şehir filtresi sessizce uygulanmaz. Aynı tuzak daha önce üniversite adı
+    # ve token çıkarımında da yaşandı.
+    t = ' ' + _tr_lower(text) + ' '
+    # Kesme işareti ve uzun ekler DESTEKLENMELİ: "İzmir'de", "İstanbul'dakiler"
+    # gibi yaygın yazımlar eskiden hiç eşleşmiyordu (kesme işareti desende yoktu,
+    # 'daki/'dakiler ekleri de listede değildi) → şehir filtresi sessizce
+    # uygulanmıyordu.
+    _EK = (r"['’´`]?"
+           r"(?:dakiler|dekiler|takiler|tekiler|daki|deki|taki|teki|"
+           r"dan|den|tan|ten|da|de|ta|te|ya|ye|a|e)?")
     for variant in sorted(_CITY_VARIANTS.keys(), key=len, reverse=True):
-        pattern = r'(?:^|[\s,\.\?!])' + re.escape(variant) + r'(?:da|de|ta|te|dan|den|tan|ten|a|e|ya|ye)?(?=[\s,\.\?!]|$)'
+        pattern = (r'(?:^|[\s,\.\?!])' + re.escape(variant) + _EK
+                   + r"(?=[\s,\.\?!'’´`]|$)")
         if re.search(pattern, t):
             return _CITY_VARIANTS[variant]
     return None
@@ -422,14 +448,45 @@ def _extract_fee_from_text(text: str) -> Optional[str]:
     return None
 
 
+# "istemiyorum", "olmasın", "hariç" gibi olumsuzlama sinyalleri
+_NEG_PAT = (r"(?:isteme|istemiyor|olmasın|olmasin|istemem|hariç|haric|"
+            r"dışında|disinda|değil|degil|çıkar|cikar|yok)")
+
+
 def _extract_uni_type_from_text(text: str) -> Optional[str]:
-    """Mesajdan üniversite türü yakala: Devlet/Vakıf."""
+    """Mesajdan üniversite türü yakala: Devlet/Vakıf.
+
+    OLUMSUZLAMA destekli. Eskiden sadece kelime aranıyordu ve "vakıf" önce
+    kontrol edildiği için "devlet olsun VAKIF İSTEMİYORUM" cümlesi "Vakıf"
+    döndürüyordu — yani kullanıcının istediğinin tam TERSİ filtreleniyordu.
+    """
     if not text:
         return None
     t = text.lower()
-    if re.search(r'\bvakıf\b|\bvakif\b|\bözel\b|\bozel\b', t):
+
+    def _negated(kelime_pat: str, diger_pat: str) -> bool:
+        """Olumsuzlama BU türe mi ait?
+
+        "vakıf olsun devlet olmasın" cümlesinde 'olmasın' DEVLET'e aittir.
+        Bu yüzden arada diğer tür kelimesi geçiyorsa eşleşme sayılmaz.
+        """
+        ara = r"(?:(?!" + diger_pat + r")[^.,;!?]){0,24}?"
+        return bool(re.search(kelime_pat + ara + _NEG_PAT, t))
+
+    vakif_pat = r'(?:\bvakıf\b|\bvakif\b|\bözel\b|\bozel\b)'
+    devlet_pat = r'\bdevlet\b'
+    vakif_var = bool(re.search(vakif_pat, t))
+    devlet_var = bool(re.search(devlet_pat, t))
+
+    # Olumsuzlanan tür, karşıtını ima eder
+    if vakif_var and _negated(vakif_pat, devlet_pat):
+        return "Devlet"
+    if devlet_var and _negated(devlet_pat, vakif_pat):
         return "Vakıf"
-    if re.search(r'\bdevlet\b', t):
+
+    if vakif_var:
+        return "Vakıf"
+    if devlet_var:
         return "Devlet"
     return None
 
