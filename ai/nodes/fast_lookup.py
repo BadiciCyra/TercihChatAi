@@ -19,6 +19,7 @@ from utils.extractors import (
     _extract_score_type_from_text,
     _extract_fee_from_text,
     _extract_uni_type_from_text,
+    _extract_uni_from_text,
     _scan_history_for_entities,
     _is_followup_question
 )
@@ -351,6 +352,15 @@ async def fast_lookup_node(state: AgentState, config: dict | None = None) -> dic
             if v:
                 ner_ctx["uni_type"] = v
                 print(f"[FAST_LOOKUP] 🔧 Uni type regex: {v}")
+        # ÜNİVERSİTE ADI — bu fallback eksikti. NER "istanbul ışık üniversitesi
+        # psikoloji" sorgusunda üniversiteyi kaçırıp yalnızca şehri (İstanbul)
+        # döndürüyordu ve kurtaran bir mekanizma yoktu; kullanıcı Işık yerine
+        # tüm İstanbul listesini görüyordu.
+        if not ner_ctx.get("uni"):
+            v = _extract_uni_from_text(user_text)
+            if v:
+                ner_ctx["uni"] = v
+                print(f"[FAST_LOOKUP] 🔧 Uni regex: {v}")
 
     # Açık/Uzaktan öğretim isteği — NER'den bağımsız, her zaman metinden bakılır.
     # Bu programlar YÖK Atlas'ta ayrı öğrenim türü (id 203/182) ve sıralamaları

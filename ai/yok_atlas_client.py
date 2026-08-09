@@ -174,13 +174,33 @@ def _ensure_lookups() -> None:
         )
 
 
+# İsimde ayırt edici olmayan kelimeler (kelime kümesi karşılaştırmasında atılır)
+_GENERIC_NAME_WORDS = frozenset({"universitesi", "universite", "uni"})
+
+
 def _match(index: dict, query: str) -> Optional[dict]:
-    """İsimden kayda eşle: tam → başlangıç → içerik (en kısa aday kazanır)."""
+    """İsimden kayda eşle: tam → kelime kümesi → başlangıç → içerik.
+
+    Kelime kümesi adımı KELİME SIRASI farkını çözer:
+      sorgu   "istanbul isik universitesi"
+      listede "isik universitesi istanbul"   → eskiden eşleşmiyordu.
+    Güvenlik için ayırt edici kelimeler TAM eşit olmalı; alt küme kabul
+    edilseydi "istanbul universitesi" sorgusu "işık universitesi istanbul"
+    kaydına da eşleşir ve yanlış üniversite dönerdi.
+    """
     q = _norm(query)
     if not q or not index:
         return None
     if q in index:
         return index[q]
+
+    q_tokens = {w for w in q.split() if w not in _GENERIC_NAME_WORDS}
+    if q_tokens:
+        for k in index:
+            k_tokens = {w for w in k.split() if w not in _GENERIC_NAME_WORDS}
+            if k_tokens and k_tokens == q_tokens:
+                return index[k]
+
     starts = [k for k in index if k.startswith(q)]
     if starts:
         return index[min(starts, key=len)]
