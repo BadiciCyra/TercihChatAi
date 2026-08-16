@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ALL_MODES, MODES, type Mode, type ModeId } from "@/lib/modes";
 import { Markdown } from "@/components/Markdown";
 
@@ -25,6 +31,21 @@ function uid() {
   }
 }
 
+// Mod ipucunun "kapatıldı" bilgisi localStorage'da; storage aboneliği
+// sayesinde başka sekmede kapatılsa da senkron kalır (SSR'da kapalı sayılır).
+function subscribeHint(cb: () => void) {
+  window.addEventListener("storage", cb);
+  return () => window.removeEventListener("storage", cb);
+}
+
+function hintDismissedSnapshot() {
+  try {
+    return localStorage.getItem("ta_mode_hint") === "1";
+  } catch {
+    return false;
+  }
+}
+
 const STAR = (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
     <path d="M12 2 9.9 8.6 3 9.2l5.2 4.4L6.6 21 12 17.3 17.4 21l-1.6-7.4L21 9.2l-6.9-.6L12 2Z" />
@@ -34,12 +55,17 @@ const STAR = (
 export function ChatInterface() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
-  const [activeMode, setActiveMode] = useState<ModeId | null>("wizard");
+  // Varsayılan mod: otomatik (null) — gateway soruyu kendisi sınıflandırır.
+  const [activeMode, setActiveMode] = useState<ModeId | null>(null);
   const [busy, setBusy] = useState(false);
+  const [atBottom, setAtBottom] = useState(true);
+  const [hintHiddenNow, setHintHiddenNow] = useState(false);
 
   const sessionId = useRef<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const atBottomRef = useRef(true);
+  const forceScrollRef = useRef(false);
 
   // Kalıcı session id — cache / rate-limit kullanıcı bazlı çalışsın.
   useEffect(() => {
@@ -56,15 +82,56 @@ export function ChatInterface() {
     sessionId.current = sid;
   }, []);
 
+  const hintDismissed = useSyncExternalStore(
+    subscribeHint,
+    hintDismissedSnapshot,
+    () => true,
+  );
+  const modeHint = !hintDismissed && !hintHiddenNow;
+
+  const dismissModeHint = useCallback(() => {
+    setHintHiddenNow(true);
+    try {
+      localStorage.setItem("ta_mode_hint", "1");
+    } catch {}
+  }, []);
+
+  // Mod seçen kullanıcı ipucuya ihtiyaç duymuyor demektir.
+  const pickMode = useCallback(
+    (m: ModeId | null) => {
+      setActiveMode(m);
+      dismissModeHint();
+    },
+    [dismissModeHint],
+  );
+
   const hasChat = messages.length > 0;
 
-  // Yeni mesajda en alta kaydır.
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const el = scrollRef.current;
+    el?.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
+  const onListScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    atBottomRef.current = near;
+    setAtBottom(near);
+  }, []);
+
+  // Kendi mesajında her zaman, cevap güncellemelerinde yalnız kullanıcı
+  // zaten alttaysa kaydır — yukarıda eski mesaj okuyanı aşağı çekme.
   useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [messages]);
+    if (forceScrollRef.current) {
+      forceScrollRef.current = false;
+      atBottomRef.current = true;
+      setAtBottom(true);
+      scrollToBottom();
+    } else if (atBottomRef.current) {
+      scrollToBottom();
+    }
+  }, [messages, scrollToBottom]);
 
   // Textarea otomatik büyüsün.
   useEffect(() => {
@@ -87,6 +154,7 @@ export function ChatInterface() {
         content: "",
         pending: true,
       };
+      forceScrollRef.current = true;
       setMessages((m) => [...m, userMsg, aiMsg]);
       setInput("");
       setBusy(true);
@@ -163,9 +231,13 @@ export function ChatInterface() {
     ALL_MODES.find((mo) => mo.id === activeMode) ?? MODES[0];
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 sm:px-6">
+    <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-4 sm:px-6">
       {hasChat ? (
-        <MessageList messages={messages} scrollRef={scrollRef} />
+        <MessageList
+          messages={messages}
+          scrollRef={scrollRef}
+          onScroll={onListScroll}
+        />
       ) : (
         <Hero mode={currentMode} onExample={(t) => send(t)} busy={busy} />
       )}
@@ -178,8 +250,12 @@ export function ChatInterface() {
         onSend={() => send(input)}
         busy={busy}
         activeMode={activeMode}
-        setActiveMode={setActiveMode}
+        setActiveMode={pickMode}
         onReset={hasChat ? () => setMessages([]) : undefined}
+        modeHint={modeHint}
+        onDismissHint={dismissModeHint}
+        jumpVisible={hasChat && !atBottom}
+        onJump={() => scrollToBottom()}
       />
     </div>
   );
@@ -238,13 +314,16 @@ function Hero({
 function MessageList({
   messages,
   scrollRef,
+  onScroll,
 }: {
   messages: ChatMsg[];
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  onScroll: () => void;
 }) {
   return (
     <div
       ref={scrollRef}
+      onScroll={onScroll}
       className="scroll-slim flex-1 space-y-5 overflow-y-auto py-6"
     >
       {messages.map((msg) =>
@@ -322,6 +401,10 @@ function Composer({
   activeMode,
   setActiveMode,
   onReset,
+  modeHint,
+  onDismissHint,
+  jumpVisible,
+  onJump,
 }: {
   input: string;
   setInput: (v: string) => void;
@@ -332,9 +415,50 @@ function Composer({
   activeMode: ModeId | null;
   setActiveMode: (m: ModeId | null) => void;
   onReset?: () => void;
+  modeHint: boolean;
+  onDismissHint: () => void;
+  jumpVisible: boolean;
+  onJump: () => void;
 }) {
   return (
-    <div className="sticky bottom-0 bg-gradient-to-t from-neutral-50 via-neutral-50 to-transparent pb-4 pt-3 dark:from-neutral-950 dark:via-neutral-950">
+    <div className="relative bg-gradient-to-t from-neutral-50 via-neutral-50 to-transparent pb-4 pt-3 dark:from-neutral-950 dark:via-neutral-950">
+      {/* En aşağı git — yukarı kaydırınca belirir */}
+      {jumpVisible && (
+        <button
+          type="button"
+          onClick={onJump}
+          aria-label="En aşağı git"
+          className="absolute -top-12 left-1/2 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-600 shadow-md transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:text-blue-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-blue-700 dark:hover:text-blue-400"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M12 5v14M19 12l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+
+      {/* Mod ipucu */}
+      {modeHint && (
+        <div className="mb-2.5 flex items-start gap-2 rounded-xl border border-blue-200 bg-blue-50/80 px-3.5 py-2.5 text-xs leading-relaxed text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+          <span aria-hidden>⚙️</span>
+          <p className="flex-1 text-left">
+            <b>Otomatik mod</b> açık — asistan sorunu anlayıp en uygun modu
+            kendisi seçer. Belirli bir konuda yardım istersen aşağıdan{" "}
+            <b>🎯 Sihirbaz</b> ya da <b>💬 Rehberlik</b> gibi bir mod
+            seçebilirsin.
+          </p>
+          <button
+            type="button"
+            onClick={onDismissHint}
+            aria-label="İpucunu kapat"
+            className="shrink-0 rounded-md p-0.5 text-blue-400 transition-colors hover:text-blue-700 dark:text-blue-500 dark:hover:text-blue-300"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* Mod hapları */}
       <div className="scroll-slim mb-2.5 flex items-center gap-1.5 overflow-x-auto pb-1">
         {ALL_MODES.map((mo) => {
